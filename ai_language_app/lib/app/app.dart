@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'app_theme.dart';
-import '../features/home/home_screen.dart';
+import 'router.dart';
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -11,7 +11,8 @@ class App extends StatelessWidget {
       title: 'AI Language Companion',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: const HomeScreen(),
+      initialRoute: AppRouter.home,
+      routes: AppRouter.routes,
     );
   }
 }

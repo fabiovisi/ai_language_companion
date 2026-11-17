@@ -1,0 +1,611 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../../domain/models/session_config.dart';
+import '../../domain/models/student_profile.dart';
+import '../../domain/session/session_state.dart';
+import '../../domain/session/session_state_manager.dart';
+import '../../core/permissions/permission_handler.dart';
+import '../../core/services/mock_stt_service.dart';
+import '../../core/services/mock_tts_service.dart';
+import '../../core/services/mock_conversation_service.dart';
+
+class ConversationScreen extends StatefulWidget {
+  const ConversationScreen({super.key});
+
+  @override
+  State<ConversationScreen> createState() => _ConversationScreenState();
+}
+
+class _ConversationScreenState extends State<ConversationScreen> {
+  final _sessionManager = SessionStateManager();
+  final _permissionHandler = AppPermissionHandler();
+  final _stt = MockSttService();
+  final _tts = MockTtsService();
+  final _conversation = MockConversationService();
+
+  StudentProfile? _profile;
+  SessionConfig? _config;
+  String _lastAiText = '';
+  String _instructionPt = '';
+  bool _cycleRunning = false;
+
+  // Aguarda escolha do aluno no fluxo de correção
+  // true = tentar novamente, false = repetir instrução
+  Completer<bool>? _correctionChoice;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_profile == null) {
+      final args = ModalRoute.of(context)?.settings.arguments;
+      if (args is (StudentProfile, SessionConfig)) {
+        _profile = args.$1;
+        _config = args.$2;
+      }
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _sessionManager.addListener(_onStateChanged);
+    _prepare();
+  }
+
+  void _onStateChanged() {
+    if (_sessionManager.state == SessionState.ready && !_cycleRunning) {
+      _runCycle();
+    }
+  }
+
+  Future<void> _prepare() async {
+    if (kDebugMode) {
+      _sessionManager.transition(SessionState.ready);
+      return;
+    }
+    final granted = await _permissionHandler.requestMicrophone();
+    if (!mounted) return;
+    if (granted) {
+      _sessionManager.transition(SessionState.ready);
+    } else {
+      _sessionManager.transition(SessionState.noPermission);
+    }
+  }
+
+  Future<void> _runCycle() async {
+    _cycleRunning = true;
+
+    while (mounted && !_shouldStop()) {
+      // 1. IA fala
+      _sessionManager.transition(SessionState.aiSpeaking);
+      if (_lastAiText.isEmpty) {
+        _lastAiText = 'Hello! Let\'s start our conversation. Tell me about yourself.';
+      }
+      await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal);
+      if (_shouldStop()) break;
+
+      // 2. Ouve o aluno
+      _sessionManager.transition(SessionState.listening);
+      final sttResult = await _stt.recognize(const Stream.empty());
+      if (_shouldStop()) break;
+
+      // 3. Processa
+      _sessionManager.transition(SessionState.processing);
+      final aiTurn = await _conversation.sendTurn(
+        userUtterance: sttResult.transcript,
+        profile: _profile ?? _defaultProfile,
+        config: _config ?? _defaultConfig,
+      );
+      if (_shouldStop()) break;
+
+      // 4. Fluxo de correção
+      if (aiTurn.hasCorrection) {
+        // IA reage no idioma alvo
+        _lastAiText = aiTurn.correctionReaction!;
+        _instructionPt = aiTurn.instructionPt!;
+
+        _sessionManager.transition(SessionState.aiSpeaking);
+        await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal);
+        if (_shouldStop()) break;
+
+        // Loop de correção — repete instrução até aluno escolher tentar
+        bool wantsToRetry = false;
+        while (!wantsToRetry && !_shouldStop()) {
+          _sessionManager.transition(SessionState.correcting);
+
+          _correctionChoice = Completer<bool>();
+          wantsToRetry = await _correctionChoice!.future;
+          _correctionChoice = null;
+
+          if (!wantsToRetry && !_shouldStop()) {
+            // Repete apenas a instrução em português
+            _lastAiText = _instructionPt;
+            _sessionManager.transition(SessionState.aiSpeaking);
+            await _tts.speak(_instructionPt, rate: _config?.speechRate ?? SpeechRate.normal);
+          }
+        }
+
+        if (_shouldStop()) break;
+
+        // Aluno tenta novamente
+        _sessionManager.transition(SessionState.listening);
+        final retryResult = await _stt.recognize(const Stream.empty());
+        if (_shouldStop()) break;
+
+        _sessionManager.transition(SessionState.processing);
+        final retryTurn = await _conversation.sendTurn(
+          userUtterance: retryResult.transcript,
+          profile: _profile ?? _defaultProfile,
+          config: _config ?? _defaultConfig,
+          isRetryAfterCorrection: true,
+        );
+        if (_shouldStop()) break;
+
+        _lastAiText = retryTurn.text;
+        _instructionPt = '';
+      } else {
+        _lastAiText = aiTurn.text;
+        _instructionPt = '';
+      }
+    }
+
+    _cycleRunning = false;
+  }
+
+  bool _shouldStop() =>
+      !mounted ||
+      _sessionManager.state == SessionState.paused ||
+      _sessionManager.state == SessionState.ended;
+
+  void _resumeSession() {
+    _sessionManager.transition(SessionState.ready);
+  }
+
+  StudentProfile get _defaultProfile => StudentProfile(
+        targetLanguage: 'Inglês',
+        cefrLevel: CefrLevel.a2,
+        lastSessionConfig: SessionConfig(
+          mode: SessionMode.continuous,
+          speechRate: SpeechRate.normal,
+        ),
+      );
+
+  SessionConfig get _defaultConfig => SessionConfig(
+        mode: SessionMode.continuous,
+        speechRate: SpeechRate.normal,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _sessionManager,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(_profile?.targetLanguage ?? 'Sessão de conversação'),
+            bottom: _profile != null
+                ? PreferredSize(
+                    preferredSize: const Size.fromHeight(44),
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _AppBarBadge(
+                            icon: Icons.school_outlined,
+                            label: _profile!.cefrLevel.name.toUpperCase(),
+                          ),
+                          const SizedBox(width: 8),
+                          _AppBarBadge(
+                            icon: Icons.topic_outlined,
+                            label: _config?.topic ?? 'Tema livre',
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : null,
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Expanded(child: _buildStateView(_sessionManager.state)),
+                _buildControls(),
+                if (kDebugMode) _buildDebugBar(),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStateView(SessionState state) {
+    return switch (state) {
+      SessionState.preparing => const _StatusView(
+          icon: Icons.hourglass_top,
+          message: 'Preparando sessão...',
+        ),
+      SessionState.ready => const _StatusView(
+          icon: Icons.check_circle_outline,
+          color: Color(0xFF176B65),
+          message: 'Sessão pronta!\nA IA vai iniciar em instantes.',
+        ),
+      SessionState.noPermission => _NoPermissionView(
+          isPermanent: false,
+          onRetry: _prepare,
+        ),
+      SessionState.aiSpeaking => _StatusView(
+          icon: Icons.volume_up_outlined,
+          color: const Color(0xFF176B65),
+          message: 'IA falando...\n\n"$_lastAiText"',
+        ),
+      SessionState.listening => const _StatusView(
+          icon: Icons.mic,
+          color: Colors.red,
+          message: 'Ouvindo...',
+        ),
+      SessionState.processing => const _StatusView(
+          icon: Icons.sync,
+          message: 'Processando...',
+        ),
+      SessionState.correcting => _CorrectionView(
+          instruction: _instructionPt,
+          onRetry: () => _correctionChoice?.complete(true),
+          onRepeat: () => _correctionChoice?.complete(false),
+        ),
+      SessionState.interval => const _StatusView(
+          icon: Icons.pause_circle_outline,
+          message: 'Intervalo — próximo diálogo em breve.',
+        ),
+      SessionState.paused => _PausedView(onResume: _resumeSession),
+      SessionState.ended => const _StatusView(
+          icon: Icons.flag_outlined,
+          message: 'Sessão encerrada.',
+        ),
+      SessionState.noConnectivity => const _StatusView(
+          icon: Icons.wifi_off,
+          message: 'Sem conexão. Verifique sua rede.',
+        ),
+      SessionState.reconnecting => const _StatusView(
+          icon: Icons.wifi_find,
+          message: 'Reconectando...',
+        ),
+      _ => const _StatusView(
+          icon: Icons.error_outline,
+          message: 'Algo deu errado. Tente novamente.',
+        ),
+    };
+  }
+
+  Widget _buildControls() {
+    final state = _sessionManager.state;
+    final isActive = state == SessionState.ready ||
+        state == SessionState.aiSpeaking ||
+        state == SessionState.listening ||
+        state == SessionState.processing ||
+        state == SessionState.correcting;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _ControlButton(
+          icon: state == SessionState.paused ? Icons.play_arrow : Icons.pause,
+          label: state == SessionState.paused ? 'Retomar' : 'Pausar',
+          onTap: isActive
+              ? () => _sessionManager.transition(SessionState.paused)
+              : state == SessionState.paused
+                  ? _resumeSession
+                  : null,
+        ),
+        _ControlButton(
+          icon: Icons.stop,
+          label: 'Encerrar',
+          color: Colors.red,
+          onTap: isActive || state == SessionState.paused
+              ? () => _sessionManager.transition(SessionState.ended)
+              : null,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDebugBar() {
+    const states = [
+      SessionState.preparing,
+      SessionState.ready,
+      SessionState.aiSpeaking,
+      SessionState.listening,
+      SessionState.processing,
+      SessionState.correcting,
+      SessionState.interval,
+      SessionState.paused,
+      SessionState.ended,
+      SessionState.noPermission,
+      SessionState.noConnectivity,
+      SessionState.reconnecting,
+    ];
+
+    return Container(
+      color: Colors.black87,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(left: 12, bottom: 4),
+            child: Text('DEBUG — forçar estado',
+                style: TextStyle(color: Colors.yellow, fontSize: 11)),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: states.map((s) {
+                final isActive = _sessionManager.state == s;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: GestureDetector(
+                    onTap: () => _sessionManager.transition(s),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isActive ? Colors.yellow : Colors.white24,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Text(
+                        s.name,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isActive ? Colors.black : Colors.white,
+                          fontWeight: isActive
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _correctionChoice?.complete(false);
+    _sessionManager.removeListener(_onStateChanged);
+    _sessionManager.dispose();
+    super.dispose();
+  }
+}
+
+// — Views —
+
+class _StatusView extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color? color;
+
+  const _StatusView({required this.icon, required this.message, this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 72, color: color ?? Colors.grey),
+          const SizedBox(height: 24),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 20),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoPermissionView extends StatelessWidget {
+  final bool isPermanent;
+  final VoidCallback onRetry;
+
+  const _NoPermissionView({required this.isPermanent, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.mic_off, size: 72, color: Colors.red),
+          const SizedBox(height: 24),
+          const Text(
+            'O microfone é necessário para a sessão de conversação.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 18),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            icon: Icon(isPermanent ? Icons.settings : Icons.mic),
+            label: Text(
+                isPermanent ? 'Abrir configurações' : 'Permitir microfone'),
+            onPressed: isPermanent ? openAppSettings : onRetry,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PausedView extends StatelessWidget {
+  final VoidCallback onResume;
+
+  const _PausedView({required this.onResume});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.pause_circle, size: 72, color: Color(0xFF176B65)),
+          const SizedBox(height: 24),
+          const Text('Sessão pausada', style: TextStyle(fontSize: 20)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Retomar'),
+            onPressed: onResume,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CorrectionView extends StatelessWidget {
+  final String instruction;
+  final VoidCallback onRetry;
+  final VoidCallback onRepeat;
+
+  const _CorrectionView({
+    required this.instruction,
+    required this.onRetry,
+    required this.onRepeat,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.orange.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.orange.withOpacity(0.4)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.edit_note, size: 48, color: Colors.orange),
+            const SizedBox(height: 16),
+            const Text(
+              'Atenção',
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              instruction,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 18),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'O que você quer fazer?',
+              style: TextStyle(fontSize: 15, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.replay),
+                  label: const Text('Repetir instrução'),
+                  onPressed: onRepeat,
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.mic),
+                  label: const Text('Tentar novamente'),
+                  onPressed: onRetry,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ControlButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final Color? color;
+
+  const _ControlButton({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton.filled(
+          icon: Icon(icon),
+          iconSize: 32,
+          style: IconButton.styleFrom(
+            backgroundColor: onTap == null
+                ? Colors.grey.shade300
+                : color ?? const Color(0xFF176B65),
+          ),
+          onPressed: onTap,
+        ),
+        const SizedBox(height: 4),
+        Text(label, style: const TextStyle(fontSize: 13)),
+      ],
+    );
+  }
+}
+
+class _AppBarBadge extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _AppBarBadge({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 17, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+                fontSize: 15,
+                color: Colors.white,
+                fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+}
