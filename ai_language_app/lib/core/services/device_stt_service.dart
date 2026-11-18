@@ -30,11 +30,21 @@ class DeviceSttService implements SttService {
     final completer = Completer<SttResult>();
     _pending = completer;
 
+    // Segurança: se nenhum aviso (resultado, erro ou fim) chegar a tempo,
+    // cancela a escuta e devolve vazio, para a aula nunca travar em "Ouvindo".
+    final safety = Timer(_listenFor + _safetyMargin, () {
+      if (completer.isCompleted) return;
+      lastError = 'tempo esgotado';
+      _finish(_empty);
+      _speech.cancel();
+    });
+    completer.future.whenComplete(safety.cancel);
+
     await _speech.listen(
       onResult: _onResult,
       listenOptions: SpeechListenOptions(
         localeId: localeId,
-        listenFor: const Duration(seconds: 30), // tempo máximo ouvindo
+        listenFor: _listenFor, // tempo máximo ouvindo
         pauseFor: const Duration(seconds: 3), // silêncio que encerra a fala
         partialResults: false, // só queremos o texto final
         cancelOnError: true,
@@ -43,6 +53,9 @@ class DeviceSttService implements SttService {
 
     return completer.future;
   }
+
+  static const _listenFor = Duration(seconds: 30);
+  static const _safetyMargin = Duration(seconds: 5);
 
   @override
   Future<void> cancel() async {

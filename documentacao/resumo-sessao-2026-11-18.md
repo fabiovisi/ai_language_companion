@@ -39,6 +39,10 @@ Chave da IA:
 - Pendente por decisão do usuário: migrar `package:flutter/material.dart` → `package:material_ui/material_ui.dart` (8 avisos; app funciona igual).
 - A tela do carro (`driving_conversation_screen.dart`) ainda usa só mocks.
 
+Mudanças posteriores (mesmo dia):
+- `device_stt_service.dart`: cronômetro de segurança de 35 s (30 s de escuta + 5 s); se nenhum aviso chegar, devolve "Não ouvi nada (tempo esgotado)" e cancela a escuta. Evita a aula travar em "Ouvindo...".
+- `conversation_screen.dart`: botões da tela de correção em `Wrap` (antes `Row`), para não estourar a largura em telas estreitas.
+
 ## Como rodar e testar no notebook
 ```
 flutter run -d web-server --web-port 8080
@@ -46,9 +50,22 @@ flutter run -d web-server --web-port 8080
 Abrir `http://localhost:8080` no Chrome normal. Para recarregar: `R` no terminal + F5 na página.
 Não usar `flutter run -d chrome`: a janela que o Flutter abre não capta o microfone (erro `audio-capture`).
 
+## Build Android no notebook (resolvido)
+- A rede da empresa usa **Zscaler**, que inspeciona alguns sites (ex.: `plugins-artifacts.gradle.org`). O Java não confiava no certificado do Zscaler e o Gradle falhava (erro PKIX).
+- O Java do Android Studio (JBR 25) não tem o provedor `Windows-ROOT`, então a opção de usar os certificados do Windows não funciona.
+- Solução: cópia da lista de certificados do Java com o "Zscaler Root CA" (que a TI instalou no Windows) em `C:\Users\fabio.vsilva\.gradle\certs\cacerts-zscaler`, e `C:\Users\fabio.vsilva\.gradle\gradle.properties` com `systemProp.javax.net.ssl.trustStore` e `trustStorePassword=changeit` (senha padrão pública). Nenhuma verificação desligada.
+- Para desfazer: apagar a pasta `.gradle\certs` e o arquivo `.gradle\gradle.properties`. Se o Android Studio for atualizado e o erro voltar, refazer a cópia.
+- O NDK 28.2 não instalava sozinho (o `sdkmanager` agora repassa para o novo Android CLI, que não entendeu o nome). Instalado com: `cmdline-tools\latest\bin\android.exe sdk install ndk/28.2.13676358`.
+- `flutter build apk --debug` funciona. APK em `ai_language_app\build\app\outputs\flutter-apk\app-debug.apk`.
+
+## Emulador Android
+- Emuladores existentes: `Pixel_7` e `Medium_Phone_API_37.0` (API 37, com Play Store); aceleração WHPX disponível.
+- Abrir: `flutter emulators --launch Pixel_7` (a mensagem "exited with code 1" pode aparecer mesmo com a janela abrindo). Rodar: `flutter run -d emulator-5554`.
+- Microfone: controles do emulador (⋯) > Microphone > **Enable Host Microphone Access**.
+- Resultado: a voz funcionou uma vez; depois o emulador fechou sozinho e passou a receber só silêncio (log: `NO_SPEECH_DETECTED`). Serve para testar telas; voz no Android fica para o tablet. Tentativa não feita: abrir com `-allow-host-audio -no-snapshot-load`. Suspeita para os fechamentos: modo de vídeo `hw.gpu.mode=auto` (alternativa: `swiftshader_indirect`).
+
 ## Limites do notebook (é da empresa)
-- A rede inspeciona HTTPS: o **Gradle falha** (erro PKIX), então não há build Android aqui. Também afetou uma chamada da AWS CLI; provavelmente afetaria npm.
-- Saídas para o build Android: GitHub Actions gerando o `.apk` (sugestão; conferir cota gratuita), pedir à TI o certificado para Java/Gradle, ou outra rede se permitido.
+- O Zscaler pode afetar outras ferramentas que não usam os certificados do Windows (ex.: uma chamada da AWS CLI falhou; npm provavelmente também).
 - O tablet ainda não foi conectado (precisa de depuração USB ativa).
 - Questão de política: projeto pessoal em notebook da empresa; prints estão no OneDrive da Dataprev. Cabe ao usuário verificar.
 
@@ -70,4 +87,4 @@ Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; p
 2. **IA real**: conferir nível gratuito do Gemini; usuário cria a chave; implementar `ConversationService` com as instruções pedagógicas, devolvendo `AiTurn`.
 3. Tela do carro com os serviços reais.
 4. Migração para `material_ui` (quando o usuário quiser).
-5. Build Android (GitHub Actions ou outra saída), backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.
+5. Testar voz no tablet Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.

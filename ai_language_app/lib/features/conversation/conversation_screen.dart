@@ -551,8 +551,10 @@ class _CorrectionView extends StatelessWidget {
               style: TextStyle(fontSize: 15, color: Colors.grey),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12, // espaço entre os botões
+              runSpacing: 8, // espaço entre linhas, se quebrar
               children: [
                 OutlinedButton.icon(
                   icon: const Icon(Icons.replay),
