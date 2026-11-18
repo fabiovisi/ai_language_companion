@@ -69,7 +69,7 @@ class MockConversationService implements ConversationService {
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
   }) async {
-    await Future.delayed(const Duration(milliseconds: 1500));
+    await Future.delayed(const Duration(milliseconds: 500));
 
     // Após correção, confirma e segue
     if (isRetryAfterCorrection) {

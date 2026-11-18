@@ -29,6 +29,7 @@ class DeviceSttService implements SttService {
 
     final completer = Completer<SttResult>();
     _pending = completer;
+    _pauseShortened = false;
 
     // Segurança: se nenhum aviso (resultado, erro ou fim) chegar a tempo,
     // cancela a escuta e devolve vazio, para a aula nunca travar em "Ouvindo".
@@ -45,8 +46,10 @@ class DeviceSttService implements SttService {
       listenOptions: SpeechListenOptions(
         localeId: localeId,
         listenFor: _listenFor, // tempo máximo ouvindo
-        pauseFor: const Duration(seconds: 3), // silêncio que encerra a fala
-        partialResults: false, // só queremos o texto final
+        pauseFor: _initialPause, // silêncio aceito antes de começar a falar
+        // Necessário para o modo contínuo no navegador e para o pauseFor
+        // saber que o aluno ainda fala. Os parciais são ignorados em _onResult.
+        partialResults: true,
         cancelOnError: true,
       ),
     );
@@ -56,6 +59,14 @@ class DeviceSttService implements SttService {
 
   static const _listenFor = Duration(seconds: 30);
   static const _safetyMargin = Duration(seconds: 5);
+
+  // Silêncio que encerra a escuta: maior antes de o aluno começar a falar
+  // (tempo para pensar), menor depois (para a conversa fluir).
+  static const _initialPause = Duration(seconds: 5);
+  static const _speechPause = Duration(milliseconds: 1500);
+
+  // Se o tempo de silêncio já foi reduzido nesta escuta.
+  bool _pauseShortened = false;
 
   @override
   Future<void> cancel() async {
@@ -73,6 +84,11 @@ class DeviceSttService implements SttService {
   }
 
   void _onResult(SpeechRecognitionResult result) {
+    // Na primeira palavra reconhecida, encurta o silêncio que encerra a fala.
+    if (!_pauseShortened && result.recognizedWords.trim().isNotEmpty) {
+      _pauseShortened = true;
+      _speech.changePauseFor(_speechPause);
+    }
     if (!result.finalResult) return;
     final confidence = result.hasConfidenceRating ? result.confidence : 1.0;
     _finish(SttResult(transcript: result.recognizedWords, confidence: confidence));
@@ -84,10 +100,24 @@ class DeviceSttService implements SttService {
     _finish(_empty);
   }
 
-  // Se a escuta terminar sem resultado final, devolve texto vazio.
+  // Fim da escuta. No Android chega 'done'; no navegador só 'notListening'.
   void _onStatus(String status) {
-    if (status == SpeechToText.doneStatus) _finish(_empty);
+    if (status == SpeechToText.doneStatus) {
+      _finish(_empty);
+    } else if (status == SpeechToText.notListeningStatus) {
+      // O texto reconhecido pode chegar logo depois deste aviso; espera um
+      // pouco antes de concluir que não houve fala.
+      final pending = _pending;
+      if (pending == null) return;
+      Timer(_resultGrace, () {
+        if (_pending != pending || pending.isCompleted) return;
+        lastError ??= 'escuta encerrada sem fala';
+        _finish(_empty);
+      });
+    }
   }
+
+  static const _resultGrace = Duration(seconds: 2);
 
   // Entrega o resultado uma única vez por escuta.
   void _finish(SttResult result) {

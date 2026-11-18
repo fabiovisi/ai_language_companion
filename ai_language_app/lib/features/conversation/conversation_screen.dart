@@ -10,7 +10,7 @@ import '../../domain/session/session_state_manager.dart';
 import '../../core/permissions/permission_handler.dart';
 import '../../core/services/device_stt_service.dart';
 import '../../core/services/stt_service.dart';
-import '../../core/services/mock_tts_service.dart';
+import '../../core/services/device_tts_service.dart';
 import '../../core/services/mock_conversation_service.dart';
 
 class ConversationScreen extends StatefulWidget {
@@ -24,7 +24,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _sessionManager = SessionStateManager();
   final _permissionHandler = AppPermissionHandler();
   final _stt = DeviceSttService();
-  final _tts = MockTtsService();
+  final _tts = DeviceTtsService();
   final _conversation = MockConversationService();
 
   StudentProfile? _profile;
@@ -40,7 +40,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // true = tentar novamente, false = repetir instrução
   Completer<bool>? _correctionChoice;
 
-  // Código do idioma para o STT (ex.: 'en_US').
+  // Código do idioma da aula para STT e TTS (ex.: 'en_US').
   String get _localeId =>
       localeIdFor((_profile ?? _defaultProfile).targetLanguage);
 
@@ -92,7 +92,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (_lastAiText.isEmpty) {
         _lastAiText = 'Hello! Let\'s start our conversation. Tell me about yourself.';
       }
-      await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal);
+      await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
       if (_shouldStop()) break;
 
       // 2. Ouve o aluno
@@ -117,7 +117,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _instructionPt = aiTurn.instructionPt!;
 
         _sessionManager.transition(SessionState.aiSpeaking);
-        await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal);
+        await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
         if (_shouldStop()) break;
 
         // Loop de correção — repete instrução até aluno escolher tentar
@@ -133,7 +133,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             // Repete apenas a instrução em português
             _lastAiText = _instructionPt;
             _sessionManager.transition(SessionState.aiSpeaking);
-            await _tts.speak(_instructionPt, rate: _config?.speechRate ?? SpeechRate.normal);
+            await _tts.speak(_instructionPt, rate: _config?.speechRate ?? SpeechRate.normal, localeId: 'pt_BR');
           }
         }
 
@@ -413,6 +413,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void dispose() {
     _correctionChoice?.complete(false);
     _stt.cancel(); // desliga o microfone ao sair da tela
+    _tts.stop(); // interrompe a voz ao sair da tela
     _sessionManager.removeListener(_onStateChanged);
     _sessionManager.dispose();
     super.dispose();

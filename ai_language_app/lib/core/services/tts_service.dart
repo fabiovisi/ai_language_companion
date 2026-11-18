@@ -2,9 +2,14 @@ import '../../domain/models/session_config.dart';
 
 abstract class TtsService {
   // Interface abstrata para Text-to-Speech (VO-02).
-  // Implementação real depende de decisão de provedor (seção 16 da spec).
 
-  Future<void> speak(String text, {required SpeechRate rate});
+  /// Fala o texto no idioma informado (ex.: 'en_US', 'pt_BR') e só termina
+  /// quando a fala acaba.
+  Future<void> speak(
+    String text, {
+    required SpeechRate rate,
+    required String localeId,
+  });
   Future<void> stop();
   bool get isSpeaking;
 }

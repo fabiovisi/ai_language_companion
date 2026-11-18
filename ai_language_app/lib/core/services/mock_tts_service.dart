@@ -8,7 +8,11 @@ class MockTtsService implements TtsService {
   bool get isSpeaking => _isSpeaking;
 
   @override
-  Future<void> speak(String text, {required SpeechRate rate}) async {
+  Future<void> speak(
+    String text, {
+    required SpeechRate rate,
+    required String localeId,
+  }) async {
     _isSpeaking = true;
     final duration = switch (rate) {
       SpeechRate.normal => const Duration(seconds: 2),
