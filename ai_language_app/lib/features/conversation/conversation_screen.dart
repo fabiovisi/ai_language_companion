@@ -2,12 +2,14 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../../domain/models/language_locale.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../../domain/session/session_state.dart';
 import '../../domain/session/session_state_manager.dart';
 import '../../core/permissions/permission_handler.dart';
-import '../../core/services/mock_stt_service.dart';
+import '../../core/services/device_stt_service.dart';
+import '../../core/services/stt_service.dart';
 import '../../core/services/mock_tts_service.dart';
 import '../../core/services/mock_conversation_service.dart';
 
@@ -21,7 +23,7 @@ class ConversationScreen extends StatefulWidget {
 class _ConversationScreenState extends State<ConversationScreen> {
   final _sessionManager = SessionStateManager();
   final _permissionHandler = AppPermissionHandler();
-  final _stt = MockSttService();
+  final _stt = DeviceSttService();
   final _tts = MockTtsService();
   final _conversation = MockConversationService();
 
@@ -31,9 +33,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String _instructionPt = '';
   bool _cycleRunning = false;
 
+  // Debug: o que o STT reconheceu na última fala (ou o motivo da falha).
+  String _heardText = '';
+
   // Aguarda escolha do aluno no fluxo de correção
   // true = tentar novamente, false = repetir instrução
   Completer<bool>? _correctionChoice;
+
+  // Código do idioma para o STT (ex.: 'en_US').
+  String get _localeId =>
+      localeIdFor((_profile ?? _defaultProfile).targetLanguage);
 
   @override
   void didChangeDependencies() {
@@ -88,7 +97,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       // 2. Ouve o aluno
       _sessionManager.transition(SessionState.listening);
-      final sttResult = await _stt.recognize(const Stream.empty());
+      final sttResult = await _stt.recognize(localeId: _localeId);
+      _heardText = _describeStt(sttResult);
       if (_shouldStop()) break;
 
       // 3. Processa
@@ -131,7 +141,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
         // Aluno tenta novamente
         _sessionManager.transition(SessionState.listening);
-        final retryResult = await _stt.recognize(const Stream.empty());
+        final retryResult = await _stt.recognize(localeId: _localeId);
+        _heardText = _describeStt(retryResult);
         if (_shouldStop()) break;
 
         _sessionManager.transition(SessionState.processing);
@@ -158,6 +169,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
       !mounted ||
       _sessionManager.state == SessionState.paused ||
       _sessionManager.state == SessionState.ended;
+
+  // Debug: texto exibido na tela sobre a última fala reconhecida.
+  String _describeStt(SttResult result) {
+    if (result.transcript.isEmpty) {
+      return 'Não ouvi nada (${_stt.lastError ?? 'sem fala detectada'})';
+    }
+    final pct = (result.confidence * 100).round();
+    return 'Você disse: "${result.transcript}" (confiança $pct%)';
+  }
 
   void _resumeSession() {
     _sessionManager.transition(SessionState.ready);
@@ -213,6 +233,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Column(
               children: [
                 Expanded(child: _buildStateView(_sessionManager.state)),
+                if (kDebugMode && _heardText.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      _heardText,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 14, fontStyle: FontStyle.italic),
+                    ),
+                  ),
                 _buildControls(),
                 if (kDebugMode) _buildDebugBar(),
                 const SizedBox(height: 8),
@@ -382,6 +412,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void dispose() {
     _correctionChoice?.complete(false);
+    _stt.cancel(); // desliga o microfone ao sair da tela
     _sessionManager.removeListener(_onStateChanged);
     _sessionManager.dispose();
     super.dispose();
@@ -492,9 +523,9 @@ class _CorrectionView extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 8),
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
-          color: Colors.orange.withOpacity(0.1),
+          color: Colors.orange.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.orange.withOpacity(0.4)),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -588,9 +619,9 @@ class _AppBarBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.15),
+        color: Colors.white.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.3)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

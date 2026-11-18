@@ -12,7 +12,7 @@ class MockSttService implements SttService {
   int _index = 0;
 
   @override
-  Future<SttResult> recognize(Stream<List<int>> audioStream) async {
+  Future<SttResult> recognize({required String localeId}) async {
     await Future.delayed(const Duration(seconds: 3));
     final transcript = _phrases[_index % _phrases.length];
     _index++;

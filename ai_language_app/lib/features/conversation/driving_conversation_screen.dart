@@ -258,20 +258,20 @@ class _PulseCirclePainter extends CustomPainter {
       canvas.drawCircle(
         center,
         waveRadius,
-        Paint()..color = color.withOpacity(opacity),
+        Paint()..color = color.withValues(alpha: opacity),
       );
     }
 
     canvas.drawCircle(
       center,
       baseRadius * scale * 0.6,
-      Paint()..color = color.withOpacity(0.9),
+      Paint()..color = color.withValues(alpha: 0.9),
     );
 
     canvas.drawCircle(
       center,
       baseRadius * scale * 0.35,
-      Paint()..color = Colors.white.withOpacity(0.15),
+      Paint()..color = Colors.white.withValues(alpha: 0.15),
     );
   }
 
@@ -301,7 +301,7 @@ class _RipplePainter extends CustomPainter {
         center,
         radius,
         Paint()
-          ..color = color.withOpacity(opacity)
+          ..color = color.withValues(alpha: opacity)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3,
       );
@@ -311,7 +311,7 @@ class _RipplePainter extends CustomPainter {
     canvas.drawCircle(
       center,
       maxRadius * 0.3,
-      Paint()..color = color.withOpacity(0.85),
+      Paint()..color = color.withValues(alpha: 0.85),
     );
   }
 

@@ -15,16 +15,7 @@ class MockConversationService implements ConversationService {
     'Wonderful! Let\'s keep going. What did you do last weekend?',
   ];
 
-  // Reações no idioma alvo quando há erro — variadas e naturais
-  static const _correctionReactions = [
-    'I didn\'t quite catch that, could you say it again?',
-    'Sorry, I\'m not sure I understood. Want to try once more?',
-    'Hmm, that wasn\'t very clear to me. Can you repeat?',
-    'I think something got lost there. Could you rephrase that?',
-    'Let me make sure I understood — could you say that differently?',
-  ];
-
-  // Instruções específicas em português com exemplos concretos
+  // Reação no idioma alvo + instrução específica em português, por erro
   static const _corrections = [
     (
       reaction: 'I didn\'t quite catch that, could you say it again?',

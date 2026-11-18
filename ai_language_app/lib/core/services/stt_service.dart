@@ -9,8 +9,8 @@ class SttResult {
 
 abstract class SttService {
   // Interface abstrata para Speech-to-Text (VO-01).
-  // Implementação real depende de decisão de provedor (seção 16 da spec).
 
-  Future<SttResult> recognize(Stream<List<int>> audioStream);
+  /// Ouve o aluno no idioma informado (ex.: 'en_US') e devolve o texto.
+  Future<SttResult> recognize({required String localeId});
   Future<void> cancel();
 }
