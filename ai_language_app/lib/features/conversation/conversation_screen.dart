@@ -11,7 +11,12 @@ import '../../core/permissions/permission_handler.dart';
 import '../../core/services/device_stt_service.dart';
 import '../../core/services/stt_service.dart';
 import '../../core/services/device_tts_service.dart';
+import '../../core/services/conversation_service.dart';
+import '../../core/services/gemini_conversation_service.dart';
+import '../../core/services/groq_conversation_service.dart';
 import '../../core/services/mock_conversation_service.dart';
+import '../../core/services/speech_segments.dart';
+import '../../domain/pedagogy/cefr_rules.dart';
 
 class ConversationScreen extends StatefulWidget {
   const ConversationScreen({super.key});
@@ -25,13 +30,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _permissionHandler = AppPermissionHandler();
   final _stt = DeviceSttService();
   final _tts = DeviceTtsService();
-  final _conversation = MockConversationService();
+  // IA real conforme a chave informada no comando de execução:
+  // Groq, senão Gemini, senão mock.
+  final ConversationService _conversation = GroqConversationService.isConfigured
+      ? GroqConversationService()
+      : GeminiConversationService.isConfigured
+          ? GeminiConversationService()
+          : MockConversationService();
 
   StudentProfile? _profile;
   SessionConfig? _config;
   String _lastAiText = '';
   String _instructionPt = '';
   bool _cycleRunning = false;
+
+  // Nova pergunta da IA, falada depois do retorno e de uma pausa.
+  String? _pendingFollowUp;
+
+  // Pausa entre o retorno da IA e a nova pergunta (modo contínuo, em teste).
+  static const _followUpPause = Duration(seconds: 2);
 
   // Debug: o que o STT reconheceu na última fala (ou o motivo da falha).
   String _heardText = '';
@@ -43,6 +60,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // Código do idioma da aula para STT e TTS (ex.: 'en_US').
   String get _localeId =>
       localeIdFor((_profile ?? _defaultProfile).targetLanguage);
+
+  // Idioma da instrução de correção: português até B2; idioma alvo em C1-C2.
+  String get _instructionLocaleId =>
+      CefrRules.instructionLanguage((_profile ?? _defaultProfile).cefrLevel) ==
+              InstructionLanguage.portuguese
+          ? 'pt_BR'
+          : _localeId;
 
   @override
   void didChangeDependencies() {
@@ -95,6 +119,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
       await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
       if (_shouldStop()) break;
 
+      // 1b. Pausa e nova pergunta, quando a IA deu um retorno antes
+      final followUp = _pendingFollowUp;
+      _pendingFollowUp = null;
+      if (followUp != null && followUp.isNotEmpty) {
+        await Future.delayed(_followUpPause);
+        if (_shouldStop()) break;
+        _lastAiText = followUp;
+        _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
+        await _tts.speak(followUp, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
+        if (_shouldStop()) break;
+      }
+
       // 2. Ouve o aluno
       _sessionManager.transition(SessionState.listening);
       final sttResult = await _stt.recognize(localeId: _localeId);
@@ -120,6 +156,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
         if (_shouldStop()) break;
 
+        // Fala a instrução logo após a reação: em um app de voz, o aluno
+        // (ao volante) não lê o cartão.
+        _lastAiText = _instructionPt;
+        _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
+        await _speakInstruction();
+        if (_shouldStop()) break;
+
         // Loop de correção — repete instrução até aluno escolher tentar
         bool wantsToRetry = false;
         while (!wantsToRetry && !_shouldStop()) {
@@ -130,10 +173,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           _correctionChoice = null;
 
           if (!wantsToRetry && !_shouldStop()) {
-            // Repete apenas a instrução em português
+            // Repete apenas a instrução (português até B2; idioma alvo em C1-C2)
             _lastAiText = _instructionPt;
             _sessionManager.transition(SessionState.aiSpeaking);
-            await _tts.speak(_instructionPt, rate: _config?.speechRate ?? SpeechRate.normal, localeId: 'pt_BR');
+            await _speakInstruction();
           }
         }
 
@@ -155,14 +198,34 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (_shouldStop()) break;
 
         _lastAiText = retryTurn.text;
+        _pendingFollowUp = retryTurn.followUp;
         _instructionPt = '';
       } else {
         _lastAiText = aiTurn.text;
+        _pendingFollowUp = aiTurn.followUp;
         _instructionPt = '';
       }
     }
 
     _cycleRunning = false;
+  }
+
+  // Fala a instrução de correção. Em A1-B2 ela está em português, com os
+  // exemplos no idioma da aula entre aspas: cada trecho usa a voz do seu idioma.
+  Future<void> _speakInstruction() async {
+    final rate = _config?.speechRate ?? SpeechRate.normal;
+    if (_instructionLocaleId == _localeId) {
+      await _tts.speak(_instructionPt, rate: rate, localeId: _localeId);
+      return;
+    }
+    for (final segment in splitQuoted(_instructionPt)) {
+      if (_shouldStop()) return;
+      await _tts.speak(
+        segment.text,
+        rate: rate,
+        localeId: segment.quoted ? _localeId : _instructionLocaleId,
+      );
+    }
   }
 
   bool _shouldStop() =>
@@ -177,6 +240,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
     final pct = (result.confidence * 100).round();
     return 'Você disse: "${result.transcript}" (confiança $pct%)';
+  }
+
+  // Debug: linha com a última fala reconhecida e a IA em uso.
+  String get _debugLine {
+    final service = _conversation;
+    var ai = 'IA: mock';
+    if (service is LlmDebugInfo) {
+      final info = service as LlmDebugInfo;
+      final model = info.lastModel?.split('/').last;
+      final duration = info.lastDuration;
+      final details = [
+        ?model,
+        if (duration != null)
+          '${(duration.inMilliseconds / 1000).toStringAsFixed(1).replaceAll('.', ',')} s',
+      ].join(', ');
+      final error = info.lastError;
+      ai = 'IA: ${info.providerName}'
+          '${details.isNotEmpty ? ' ($details)' : ''}'
+          '${error != null ? ' erro: $error' : ''}';
+    }
+    return _heardText.isEmpty ? ai : '$_heardText\n$ai';
   }
 
   void _resumeSession() {
@@ -233,11 +317,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Column(
               children: [
                 Expanded(child: _buildStateView(_sessionManager.state)),
-                if (kDebugMode && _heardText.isNotEmpty)
+                if (kDebugMode)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Text(
-                      _heardText,
+                      _debugLine,
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                           fontSize: 14, fontStyle: FontStyle.italic),

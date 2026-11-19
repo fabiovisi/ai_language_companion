@@ -7,12 +7,13 @@ import 'conversation_service.dart';
 class MockConversationService implements ConversationService {
   final _random = Random();
 
+  // Retorno + nova pergunta (falados com uma pausa entre eles).
   static const _normalResponses = [
-    'Nice to meet you! Tell me more about yourself.',
-    'That sounds interesting! What do you enjoy doing in your free time?',
-    'Great! How often do you practice English during the week?',
-    'I see! Have you ever traveled to an English-speaking country?',
-    'Wonderful! Let\'s keep going. What did you do last weekend?',
+    (feedback: 'Nice to meet you!', question: 'Tell me more about yourself.'),
+    (feedback: 'That sounds interesting!', question: 'What do you enjoy doing in your free time?'),
+    (feedback: 'Great!', question: 'How often do you practice English during the week?'),
+    (feedback: 'I see!', question: 'Have you ever traveled to an English-speaking country?'),
+    (feedback: 'Wonderful!', question: 'What did you do last weekend?'),
   ];
 
   // Reação no idioma alvo + instrução específica em português, por erro
@@ -51,11 +52,18 @@ class MockConversationService implements ConversationService {
 
   // Confirmações após correção bem-sucedida — variadas
   static const _confirmations = [
-    'Ok, I know what you mean! Let\'s continue.',
+    'Ok, I know what you mean!',
     'Got it! That makes much more sense now.',
     'Perfect, now I understood you clearly!',
-    'Exactly! Well done. Let\'s move on.',
+    'Exactly! Well done.',
     'Great correction! I\'m glad we cleared that up.',
+  ];
+
+  // Pergunta que segue a confirmação.
+  static const _followUps = [
+    'What else would you like to tell me?',
+    'And how was the rest of your day?',
+    'What do you want to talk about next?',
   ];
 
   int _responseIndex = 0;
@@ -74,8 +82,9 @@ class MockConversationService implements ConversationService {
     // Após correção, confirma e segue
     if (isRetryAfterCorrection) {
       final confirmation = _confirmations[_confirmationIndex % _confirmations.length];
+      final followUp = _followUps[_confirmationIndex % _followUps.length];
       _confirmationIndex++;
-      return AiTurn(text: confirmation);
+      return AiTurn(text: confirmation, followUp: followUp);
     }
 
     // ~30% de chance de erro por turno
@@ -96,8 +105,8 @@ class MockConversationService implements ConversationService {
       );
     }
 
-    final text = _normalResponses[_responseIndex % _normalResponses.length];
+    final r = _normalResponses[_responseIndex % _normalResponses.length];
     _responseIndex++;
-    return AiTurn(text: text);
+    return AiTurn(text: r.feedback, followUp: r.question);
   }
 }

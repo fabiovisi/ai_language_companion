@@ -10,18 +10,21 @@ Use este arquivo como contexto ao iniciar uma nova conversa.
 ## Visão geral
 App Flutter de tutor de idiomas por voz com IA. Alvo final: Android Auto, Apple CarPlay e multimídia do BYD Song Pro. Desenvolvimento e testes no Chrome (agora) e tablet Android (depois).
 
+## Decisão de fase: uso pessoal
+- Por enquanto o app é só para o usuário usar e testar. A distribuição ao público fica para quando estiver completo.
+- Ficam para a fase de distribuição: modelo de preço (ideia: assinatura de R$ 15 a R$ 20/mês com limite de uso diário; venda única de até US$ 1 não cobre IA na nuvem), backend que guarda a chave, privacidade/LGPD, conversar com possíveis usuários.
+
 ## Decisão principal desta sessão: solução gratuita (sem AWS)
 
 | Etapa | Solução | Situação |
 |---|---|---|
 | Ouvir (STT) | `speech_to_text` (reconhecimento do aparelho/navegador) | **Real e testado no Chrome** ("Let's talk about", confiança 98%) |
 | Falar (TTS) | `flutter_tts` (voz do aparelho/navegador) | **Real e testado no Chrome** (`DeviceTtsService`) |
-| Pensar (LLM) | A decidir — sugestão: Google Gemini (nível gratuito); alternativa: IA no aparelho (Gemma) | Ainda usa `MockConversationService` |
+| Pensar (LLM) | **Groq** (nível gratuito, modelos GPT-OSS); Gemini como alternativa | **Real e testado no Chrome** (`GroqConversationService`, resposta em ~1 s) |
 
 Chave da IA:
-- Agora (só o usuário usa): opção A — chave passada via `--dart-define=GEMINI_API_KEY=...`, nunca em arquivo, git, print ou chat; chave restrita à API do Gemini; conta Google sem faturamento.
+- Agora (uso pessoal): opção A — chave passada via `--dart-define`, nunca em arquivo, git, print ou chat. Na versão web a chave fica no código do app no navegador (aceitável só para uso pessoal).
 - Antes de outras pessoas usarem: opção B — backend gratuito (ex.: Cloudflare Workers) guardando a chave.
-- Antes de escolher o Gemini: conferir as regras atuais do nível gratuito.
 
 ## Arquitetura (inalterada)
 - `core/` serviços externos atrás de interfaces; `domain/` regras pedagógicas e estados; `features/` telas.
@@ -45,12 +48,29 @@ Mudanças posteriores (mesmo dia):
 - Voz real: `tts_service.dart` com `speak(text, rate:, localeId:)`; novo `device_tts_service.dart` (`flutter_tts`, `awaitSpeakCompletion`, idioma `en_US`→`en-US`, velocidade web 1.0/0.8/0.6 e celular 0.5/0.4/0.3, tempo máximo 10 s + 150 ms por caractere). A tela usa `DeviceTtsService`; respostas no idioma da aula, instrução de correção em `pt_BR`; `_tts.stop()` no `dispose`.
 - Escuta (`device_stt_service.dart`): no navegador o fim chega como `notListening` (não `done`) e agora encerra a escuta, com 2 s de espera por um resultado atrasado; `partialResults: true` (liga o modo contínuo no Chrome; parciais ignorados); silêncio de 5 s antes de começar a falar e 1,5 s depois da primeira palavra (`changePauseFor`). Ritmo aprovado nos testes.
 - `mock_conversation_service.dart`: tempo de "pensar" de 1,5 s para 0,5 s.
-- Conhecido: Pausar/Encerrar não interrompem a voz nem o microfone na hora; só valem depois da fala atual. C1–C2 ainda recebem instrução em português (resolver com a IA real).
+- Conhecido: Pausar/Encerrar não interrompem a voz nem o microfone na hora; só valem depois da fala atual.
+
+Mudanças da parte final do dia (IA real e ajustes de voz):
+- `conversation_service.dart`: interface com `isRetryAfterCorrection`; `AiTurn.followUp` (nova pergunta); interface `LlmDebugInfo` (nome, modelo, tempo, último erro).
+- Novo `conversation_prompt.dart`: parte comum às IAs — instruções da aula, marcadores `[SILENCE]` e `[RETRY]`, `turnFromJson`, frase de reserva por idioma, histórico curto (4 trocas). JSON com `feedback` (retorno, sem pergunta), `question` (nova pergunta), `hasError`, `reaction`, `instruction`, `errorType`, `correctForm`. Em A1–B2 a instrução é **sempre em português**, com exemplo completo e lembrete no fim; palavras no idioma da aula vão **entre aspas duplas**. Texto simples, sem markdown.
+- Novo `groq_conversation_service.dart` (em uso): `openai/gpt-oss-120b`, reserva `openai/gpt-oss-20b`; troca de modelo em 429/404/5xx/tempo; 10 s por tentativa; `response_format: json_object`, `reasoning_effort: low`.
+- `gemini_conversation_service.dart`: usa a parte comum; mantido como alternativa (`gemini-flash-lite-latest`).
+- Tela: escolhe Groq, senão Gemini, senão mock (conforme a chave no comando). Fala reação → instrução automaticamente (sem precisar tocar). Instrução dividida pelas aspas (`speech_segments.dart`): português com voz pt-BR, exemplos com a voz do idioma da aula. Sem erro: retorno → pausa de **2 s** (`_followUpPause`) → pergunta. Debug mostra "IA: Groq (gpt-oss-120b, 0,8 s)".
+- `device_tts_service.dart`: no navegador espera a lista de vozes (até 2 s) antes da primeira fala (a saudação saía com a voz padrão do Windows); prefere vozes com "Google" no nome; português 15% mais rápido no navegador (`_webRateFactors`).
+- Pacote `http: ^1.6.0`. Testes: 8 (Home, `splitQuoted`, `turnFromJson`), todos passando.
+
+## IA de conversa: testes feitos
+- Gemini gratuito: funciona, mas sobrecarregado (503 "high demand") e lento (9 a 27 s); modelos 2.5 indisponíveis para contas novas; no gratuito o Google usa as conversas para treino.
+- Groq gratuito (sem cartão): `gpt-oss-120b` e `gpt-oss-20b` em menos de 1 s, correção certa; Llama 3.x indisponíveis (404). Por padrão não guarda nem treina com as conversas. Limite estimado (não confirmado na página oficial): ~200 mil tokens/dia nos GPT-OSS ≈ 150 a 250 turnos.
+- Aceitam chamadas do navegador (CORS testado): Groq, OpenRouter, Gemini. OpenRouter gratuito: só 50 pedidos/dia. Cerebras: só teste de 30 dias. Mistral: condições incertas.
+- Chaves: criadas pelo usuário (Groq com validade de 90 dias). Nunca em arquivo, git, print ou chat. No terminal: `$env:GROQ_API_KEY = Read-Host "Cole a chave do Groq"` (não grava no histórico do PowerShell).
 
 ## Como rodar e testar no notebook
 ```
-flutter run -d web-server --web-port 8080
+$env:GROQ_API_KEY = Read-Host "Cole a chave do Groq"
+flutter run -d web-server --web-port 8080 --dart-define=GROQ_API_KEY=$env:GROQ_API_KEY
 ```
+Sem `--dart-define`, o app usa o mock. Para o Gemini: `--dart-define=GEMINI_API_KEY=$env:GEMINI_API_KEY`. Mudou a chave: fechar com `q` e rodar de novo (o `R` não basta).
 Abrir `http://localhost:8080` no Chrome normal. Para recarregar: `R` no terminal + F5 na página.
 Não usar `flutter run -d chrome`: a janela que o Flutter abre não capta o microfone (erro `audio-capture`).
 
@@ -86,9 +106,18 @@ Não usar `flutter run -d chrome`: a janela que o Flutter abre não capta o micr
 ## Ferramentas instaladas no notebook
 Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; podem ser desinstalados). Docker 28.5, Python 3.14, Node 14 (já existiam; Node 14 é antigo demais para o Cloudflare Wrangler).
 
+## Itens da sessão (Home)
+- Idioma e nível: funcionam (instruções da IA e idioma da instrução).
+- Tema: funciona com a IA real (entra nas instruções); o mock ignora.
+- Velocidade: funciona (velocidade da voz).
+- Modo: **ainda sem efeito**. Definição do usuário: o modo define a pausa entre o retorno da IA e a nova pergunta. Contínuo = 2 s. Intervalado = 30 s, 1 min ou 2 min, à escolha.
+
 ## Próximos passos
-1. **IA real**: conferir nível gratuito do Gemini; usuário cria a chave; implementar `ConversationService` com as instruções pedagógicas, devolvendo `AiTurn`.
-2. Parar voz e microfone na hora em que a aula pausa ou termina.
-3. Tela do carro com os serviços reais.
-4. Migração para `material_ui` (quando o usuário quiser).
-5. Testar voz no tablet Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.
+1. **Respostas longas cortadas** (problema relatado): a escuta corta e fica só com parte da fala. Causas prováveis, a investigar antes de mudar valores: silêncio de 1,5 s que encerra a fala; modo contínuo do Chrome entregando a fala em blocos e o serviço ficando só com o primeiro.
+2. **Modo intervalado (etapa 2)**: na Home, Modo com 4 opções (Contínuo, Intervalado 30 s, 1 min, 2 min); `SessionConfig` com o tempo da pausa; durante a pausa, estado "Intervalo" com contagem, microfone desligado e botão "Continuar agora". Substitui a ideia anterior de encerrar o diálogo pelo silêncio.
+3. **Saudação gerada pela IA**: hoje é fixa em inglês ("Hello! Let's start our conversation...") e ignora tema e idioma. Pedir à IA uma abertura no idioma, tema e nível; reserva fixa por idioma.
+4. Parar voz e microfone na hora em que a aula pausa ou termina.
+5. Responder por voz na correção ("tentar de novo" / "repetir"); só então falar a pergunta "Quer tentar novamente...?".
+6. Tela do carro com os serviços reais.
+7. Migração para `material_ui` (quando o usuário quiser).
+8. Testar voz no tablet Android; conferir velocidade das vozes no Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.
