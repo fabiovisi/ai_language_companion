@@ -15,7 +15,7 @@ App Flutter de tutor de idiomas por voz com IA. Alvo final: Android Auto, Apple 
 | Etapa | Solução | Situação |
 |---|---|---|
 | Ouvir (STT) | `speech_to_text` (reconhecimento do aparelho/navegador) | **Real e testado no Chrome** ("Let's talk about", confiança 98%) |
-| Falar (TTS) | `flutter_tts` (voz do aparelho/navegador) | Pacote instalado; ainda usa `MockTtsService` |
+| Falar (TTS) | `flutter_tts` (voz do aparelho/navegador) | **Real e testado no Chrome** (`DeviceTtsService`) |
 | Pensar (LLM) | A decidir — sugestão: Google Gemini (nível gratuito); alternativa: IA no aparelho (Gemma) | Ainda usa `MockConversationService` |
 
 Chave da IA:
@@ -42,6 +42,10 @@ Chave da IA:
 Mudanças posteriores (mesmo dia):
 - `device_stt_service.dart`: cronômetro de segurança de 35 s (30 s de escuta + 5 s); se nenhum aviso chegar, devolve "Não ouvi nada (tempo esgotado)" e cancela a escuta. Evita a aula travar em "Ouvindo...".
 - `conversation_screen.dart`: botões da tela de correção em `Wrap` (antes `Row`), para não estourar a largura em telas estreitas.
+- Voz real: `tts_service.dart` com `speak(text, rate:, localeId:)`; novo `device_tts_service.dart` (`flutter_tts`, `awaitSpeakCompletion`, idioma `en_US`→`en-US`, velocidade web 1.0/0.8/0.6 e celular 0.5/0.4/0.3, tempo máximo 10 s + 150 ms por caractere). A tela usa `DeviceTtsService`; respostas no idioma da aula, instrução de correção em `pt_BR`; `_tts.stop()` no `dispose`.
+- Escuta (`device_stt_service.dart`): no navegador o fim chega como `notListening` (não `done`) e agora encerra a escuta, com 2 s de espera por um resultado atrasado; `partialResults: true` (liga o modo contínuo no Chrome; parciais ignorados); silêncio de 5 s antes de começar a falar e 1,5 s depois da primeira palavra (`changePauseFor`). Ritmo aprovado nos testes.
+- `mock_conversation_service.dart`: tempo de "pensar" de 1,5 s para 0,5 s.
+- Conhecido: Pausar/Encerrar não interrompem a voz nem o microfone na hora; só valem depois da fala atual. C1–C2 ainda recebem instrução em português (resolver com a IA real).
 
 ## Como rodar e testar no notebook
 ```
@@ -83,8 +87,8 @@ Não usar `flutter run -d chrome`: a janela que o Flutter abre não capta o micr
 Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; podem ser desinstalados). Docker 28.5, Python 3.14, Node 14 (já existiam; Node 14 é antigo demais para o Cloudflare Wrangler).
 
 ## Próximos passos
-1. **Voz real (TTS)** com `flutter_tts`: explicar a interface `TtsService`, implementar `DeviceTtsService` (idioma via `localeIdFor`, velocidade da Home), ligar na tela.
-2. **IA real**: conferir nível gratuito do Gemini; usuário cria a chave; implementar `ConversationService` com as instruções pedagógicas, devolvendo `AiTurn`.
+1. **IA real**: conferir nível gratuito do Gemini; usuário cria a chave; implementar `ConversationService` com as instruções pedagógicas, devolvendo `AiTurn`.
+2. Parar voz e microfone na hora em que a aula pausa ou termina.
 3. Tela do carro com os serviços reais.
 4. Migração para `material_ui` (quando o usuário quiser).
 5. Testar voz no tablet Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.
