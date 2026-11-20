@@ -2,6 +2,7 @@ import 'dart:math';
 import '../../domain/models/student_profile.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/correction.dart';
+import 'conversation_prompt.dart';
 import 'conversation_service.dart';
 
 class MockConversationService implements ConversationService {
@@ -69,6 +70,13 @@ class MockConversationService implements ConversationService {
   int _responseIndex = 0;
   int _correctionIndex = 0;
   int _confirmationIndex = 0;
+
+  @override
+  Future<AiTurn> startConversation({
+    required StudentProfile profile,
+    required SessionConfig config,
+  }) async =>
+      fallbackOpening(profile.targetLanguage);
 
   @override
   Future<AiTurn> sendTurn({

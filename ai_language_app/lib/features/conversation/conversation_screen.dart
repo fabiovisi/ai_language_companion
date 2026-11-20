@@ -114,11 +114,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _cycleRunning = true;
 
     while (mounted && !_shouldStop()) {
+      // 0. Abertura: saudação e primeira pergunta pedidas à IA
+      // (hora do dia, tema e nível), com reserva fixa no idioma da aula.
+      if (_lastAiText.isEmpty) {
+        _sessionManager.transition(SessionState.preparing);
+        final opening = await _conversation.startConversation(
+          profile: _profile ?? _defaultProfile,
+          config: _config ?? _defaultConfig,
+        );
+        if (_shouldStop()) break;
+        _lastAiText = opening.text;
+        _pendingFollowUp = opening.followUp;
+      }
+
       // 1. IA fala
       _sessionManager.transition(SessionState.aiSpeaking);
-      if (_lastAiText.isEmpty) {
-        _lastAiText = 'Hello! Let\'s start our conversation. Tell me about yourself.';
-      }
       await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
       if (_shouldStop()) break;
 

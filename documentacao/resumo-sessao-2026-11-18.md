@@ -1,4 +1,4 @@
-# Resumo do Projeto — AI Language Companion (sessão de 18/11/2026)
+# Resumo do Projeto — AI Language Companion (sessões a partir de 18/11/2026)
 
 Use este arquivo como contexto ao iniciar uma nova conversa.
 
@@ -106,18 +106,29 @@ Não usar `flutter run -d chrome`: a janela que o Flutter abre não capta o micr
 ## Ferramentas instaladas no notebook
 Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; podem ser desinstalados). Docker 28.5, Python 3.14, Node 14 (já existiam; Node 14 é antigo demais para o Cloudflare Wrangler).
 
-## Itens da sessão (Home)
-- Idioma e nível: funcionam (instruções da IA e idioma da instrução).
-- Tema: funciona com a IA real (entra nas instruções); o mock ignora.
-- Velocidade: funciona (velocidade da voz).
+## Sessão seguinte (commits `fa8591c` e da saudação)
+- **Respostas longas cortadas: resolvido.** O pacote junta os trechos do Chrome (`_aggregateResults` ligado), então a causa era o silêncio de 1,5 s. Agora 3 s (`_speechPause`); aprovado nos testes.
+- Telas de status e cartão de correção roláveis (`SingleChildScrollView`): a instrução longa da IA estourava a altura ("bottom overflowed").
+- **"Você" na conversa**: balão com a última fala do aluno, sempre visível ("Não consegui ouvir. Tente de novo." quando falha).
+- **Debug opcional**: opção "Mostrar informações de debug" (`core/debug/debug_settings.dart`) mostra confiança da fala (ou motivo técnico), IA/modelo/tempo e a barra de estados (também na tela do carro). O pulo da permissão de microfone continua preso ao `kDebugMode`.
+- **Nomes amigáveis dos níveis** (`domain/models/cefr_level_labels.dart`): Iniciante, Básico, Intermediário, Intermediário avançado, Avançado, Fluente, com descrição; Avançado e Fluente avisam "Correções no idioma estudado". O código (A1 a C2) não aparece mais na tela; a IA continua recebendo o código.
+- **Configurações guardadas no aparelho**: pacote `shared_preferences`; interface `KeyValueStore` (`core/storage/key_value_store.dart`); `AppSettings` (`domain/models/app_settings.dart`: idioma, nível, tema, modo, velocidade, debug; valores desconhecidos voltam ao padrão); `SettingsController` (`core/storage/settings_controller.dart`, instância `appSettings`, carregada em `main.dart`). No Chrome os dados ficam presos a `http://localhost:8080`.
+- **Tela de Configurações** (`settings_screen.dart`): idioma, nível (com descrição), modo, velocidade; seção Desenvolvimento com debug e "Simular modo carro" (só em `kDebugMode`). `driveModeProvider` virou instância única.
+- **Home simplificada**: engrenagem no topo, cartão "Sua prática" (resumo, abre as Configurações), tema (fica na Home) e "Iniciar conversação". Componentes comuns em `features/common/option_widgets.dart`.
+- **Saudação gerada pela IA**: `startConversation` na interface `ConversationService`. Pedido `[START]` com hora do dia (morning/afternoon/evening) e um ângulo sorteado do tema (5 por tema; 6 no tema livre). Resposta = saudação → pausa → primeira pergunta; entra no histórico. Reserva fixa nos 5 idiomas (saudação pela hora + pergunta sorteada), também usada pelo mock. Tela mostra "Preparando sessão..." durante o pedido.
+- Aviso: `flutter pub add` pediu o Modo de Desenvolvedor do Windows (links simbólicos de plugins). Só afeta a versão Windows desktop (não usada); web, Android e testes funcionam.
+- Testes: 18, todos passando.
+
+## Itens da sessão
+- Idioma, nível, velocidade: funcionam (agora nas Configurações).
+- Tema: funciona com a IA real (instruções e ângulo da abertura); fica na Home.
 - Modo: **ainda sem efeito**. Definição do usuário: o modo define a pausa entre o retorno da IA e a nova pergunta. Contínuo = 2 s. Intervalado = 30 s, 1 min ou 2 min, à escolha.
 
 ## Próximos passos
-1. **Respostas longas cortadas** (problema relatado): a escuta corta e fica só com parte da fala. Causas prováveis, a investigar antes de mudar valores: silêncio de 1,5 s que encerra a fala; modo contínuo do Chrome entregando a fala em blocos e o serviço ficando só com o primeiro.
-2. **Modo intervalado (etapa 2)**: na Home, Modo com 4 opções (Contínuo, Intervalado 30 s, 1 min, 2 min); `SessionConfig` com o tempo da pausa; durante a pausa, estado "Intervalo" com contagem, microfone desligado e botão "Continuar agora". Substitui a ideia anterior de encerrar o diálogo pelo silêncio.
-3. **Saudação gerada pela IA**: hoje é fixa em inglês ("Hello! Let's start our conversation...") e ignora tema e idioma. Pedir à IA uma abertura no idioma, tema e nível; reserva fixa por idioma.
-4. Parar voz e microfone na hora em que a aula pausa ou termina.
-5. Responder por voz na correção ("tentar de novo" / "repetir"); só então falar a pergunta "Quer tentar novamente...?".
-6. Tela do carro com os serviços reais.
-7. Migração para `material_ui` (quando o usuário quiser).
-8. Testar voz no tablet Android; conferir velocidade das vozes no Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro.
+1. **Memória da conversa por idioma** (etapa 3 do armazenamento, aprovada): resumo curto sobre o aluno e erros recorrentes, atualizado pela IA a cada 4 trocas e guardado no aparelho; entra nas instruções e na abertura; botão "Apagar memória" nas Configurações. O resumo é enviado ao Groq a cada aula (aceitável no uso pessoal).
+2. **Modo intervalado**: nas Configurações, Modo com 4 opções (Contínuo, Intervalado 30 s, 1 min, 2 min); `AppSettings`/`SessionConfig` com o tempo da pausa; durante a pausa, estado "Intervalo" com contagem, microfone desligado e botão "Continuar agora".
+3. Parar voz e microfone na hora em que a aula pausa ou termina.
+4. Responder por voz na correção ("tentar de novo" / "repetir"); só então falar a pergunta "Quer tentar novamente...?".
+5. Tela do carro com os serviços reais.
+6. Migração para `material_ui` (quando o usuário quiser).
+7. Testar voz no tablet Android; conferir velocidade das vozes no Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro; remover a opção de debug antes de publicar.

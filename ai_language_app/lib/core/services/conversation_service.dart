@@ -35,6 +35,13 @@ abstract class ConversationService {
   // Regra para distribuição: chaves de API ficam no backend (PR-04).
   // Fase atual (uso pessoal): a chave do Gemini vem via --dart-define.
 
+  /// Abertura da conversa: saudação (text) e primeira pergunta (followUp),
+  /// no idioma, tema e nível da aula.
+  Future<AiTurn> startConversation({
+    required StudentProfile profile,
+    required SessionConfig config,
+  });
+
   /// [isRetryAfterCorrection]: o aluno está tentando de novo após uma correção.
   Future<AiTurn> sendTurn({
     required String userUtterance,

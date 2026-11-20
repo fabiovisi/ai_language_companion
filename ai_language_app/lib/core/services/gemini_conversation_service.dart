@@ -34,15 +34,31 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
   String? lastError;
 
   @override
+  Future<AiTurn> startConversation({
+    required StudentProfile profile,
+    required SessionConfig config,
+  }) async {
+    final turn = await _turn(openingMessage(config), '', profile, config);
+    // Sem resposta válida da IA: abertura fixa no idioma da aula.
+    return lastError != null || turn.hasCorrection
+        ? fallbackOpening(profile.targetLanguage)
+        : turn;
+  }
+
+  @override
   Future<AiTurn> sendTurn({
     required String userUtterance,
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
-  }) async {
+  }) =>
+      _turn(markUtterance(userUtterance, isRetry: isRetryAfterCorrection),
+          userUtterance, profile, config);
+
+  Future<AiTurn> _turn(String message, String userUtterance,
+      StudentProfile profile, SessionConfig config) async {
     lastError = null;
     lastModel = null;
-    final message = markUtterance(userUtterance, isRetry: isRetryAfterCorrection);
 
     final contents = [
       for (final e in _history.exchanges) ...[
