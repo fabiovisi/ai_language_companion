@@ -125,10 +125,14 @@ Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; p
 - Modo: **ainda sem efeito**. Definição do usuário: o modo define a pausa entre o retorno da IA e a nova pergunta. Contínuo = 2 s. Intervalado = 30 s, 1 min ou 2 min, à escolha.
 
 ## Próximos passos
-1. **Memória da conversa por idioma** (etapa 3 do armazenamento, aprovada): resumo curto sobre o aluno e erros recorrentes, atualizado pela IA a cada 4 trocas e guardado no aparelho; entra nas instruções e na abertura; botão "Apagar memória" nas Configurações. O resumo é enviado ao Groq a cada aula (aceitável no uso pessoal).
-2. **Modo intervalado**: nas Configurações, Modo com 4 opções (Contínuo, Intervalado 30 s, 1 min, 2 min); `AppSettings`/`SessionConfig` com o tempo da pausa; durante a pausa, estado "Intervalo" com contagem, microfone desligado e botão "Continuar agora".
-3. Parar voz e microfone na hora em que a aula pausa ou termina.
-4. Responder por voz na correção ("tentar de novo" / "repetir"); só então falar a pergunta "Quer tentar novamente...?".
-5. Tela do carro com os serviços reais.
-6. Migração para `material_ui` (quando o usuário quiser).
-7. Testar voz no tablet Android; conferir velocidade das vozes no Android; backend gratuito (opção B), Android Auto/CarPlay, detecção de modo carro; remover a opção de debug antes de publicar.
+Ver **`documentacao/plano-melhorias.md`**, com as etapas em ordem:
+0. Teste do reconhecimento em português numa aula de outro idioma (sem código).
+1. Pedidos de ajuda pela fala: palavras desconhecidas ("Essa frase tem palavras que não conheço"), "Como se diz...?", traduzir, repetir, mais devagar.
+2. Comandos de controle pela fala e parada imediata de voz e microfone.
+3. Tela do carro com os serviços reais.
+4. Memória por idioma, resumo da aula, revisão de erros e palavras, retomar de onde parou, "Apagar memória".
+5. Cenas de role-play.
+6. Duração do trajeto e modo intervalado.
+7. Personalização (jeito de corrigir, personalidade, voz e sotaque).
+8. Meta diária, sequência de dias, sugestão de subir de nível.
+Sugestão para a próxima sessão: etapa 0 e etapa 1.
