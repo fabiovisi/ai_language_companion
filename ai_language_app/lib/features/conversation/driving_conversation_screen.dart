@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../core/debug/debug_settings.dart';
 import '../../domain/session/session_state.dart';
 import '../../domain/session/session_state_manager.dart';
 
@@ -114,7 +114,7 @@ class _DrivingConversationScreenState extends State<DrivingConversationScreen>
                   style: const TextStyle(color: Colors.white70, fontSize: 18),
                 ),
                 const SizedBox(height: 32),
-                if (kDebugMode) _buildDebugBar(),
+                if (showDebugInfo.value) _buildDebugBar(),
               ],
             ),
           ),

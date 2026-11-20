@@ -2,11 +2,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../../domain/models/cefr_level_labels.dart';
 import '../../domain/models/language_locale.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../../domain/session/session_state.dart';
 import '../../domain/session/session_state_manager.dart';
+import '../../core/debug/debug_settings.dart';
 import '../../core/permissions/permission_handler.dart';
 import '../../core/services/device_stt_service.dart';
 import '../../core/services/stt_service.dart';
@@ -50,8 +52,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // Pausa entre o retorno da IA e a nova pergunta (modo contínuo, em teste).
   static const _followUpPause = Duration(seconds: 2);
 
-  // Debug: o que o STT reconheceu na última fala (ou o motivo da falha).
-  String _heardText = '';
+  // Última fala reconhecida e motivo técnico da última falha do STT.
+  SttResult? _lastHeard;
+  String? _lastSttError;
 
   // Aguarda escolha do aluno no fluxo de correção
   // true = tentar novamente, false = repetir instrução
@@ -134,7 +137,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       // 2. Ouve o aluno
       _sessionManager.transition(SessionState.listening);
       final sttResult = await _stt.recognize(localeId: _localeId);
-      _heardText = _describeStt(sttResult);
+      _rememberHeard(sttResult);
       if (_shouldStop()) break;
 
       // 3. Processa
@@ -185,7 +188,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         // Aluno tenta novamente
         _sessionManager.transition(SessionState.listening);
         final retryResult = await _stt.recognize(localeId: _localeId);
-        _heardText = _describeStt(retryResult);
+        _rememberHeard(retryResult);
         if (_shouldStop()) break;
 
         _sessionManager.transition(SessionState.processing);
@@ -233,16 +236,53 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _sessionManager.state == SessionState.paused ||
       _sessionManager.state == SessionState.ended;
 
-  // Debug: texto exibido na tela sobre a última fala reconhecida.
-  String _describeStt(SttResult result) {
-    if (result.transcript.isEmpty) {
-      return 'Não ouvi nada (${_stt.lastError ?? 'sem fala detectada'})';
-    }
-    final pct = (result.confidence * 100).round();
-    return 'Você disse: "${result.transcript}" (confiança $pct%)';
+  // Guarda a última fala reconhecida (exibida na tela) e o motivo técnico
+  // de falha do reconhecimento (exibido só no debug).
+  void _rememberHeard(SttResult result) {
+    _lastHeard = result;
+    _lastSttError = _stt.lastError;
   }
 
-  // Debug: linha com a última fala reconhecida e a IA em uso.
+  // Última fala do aluno, como parte da conversa.
+  Widget _buildHeard() {
+    final heard = _lastHeard;
+    if (heard == null) return const SizedBox.shrink();
+    final empty = heard.transcript.isEmpty;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Você',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            empty
+                ? 'Não consegui ouvir. Tente de novo.'
+                : '"${heard.transcript}"',
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 16,
+              fontStyle: empty ? FontStyle.italic : FontStyle.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Debug: confiança (ou motivo da falha) do reconhecimento e IA em uso.
   String get _debugLine {
     final service = _conversation;
     var ai = 'IA: mock';
@@ -260,7 +300,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
           '${details.isNotEmpty ? ' ($details)' : ''}'
           '${error != null ? ' erro: $error' : ''}';
     }
-    return _heardText.isEmpty ? ai : '$_heardText\n$ai';
+    final heard = _lastHeard;
+    if (heard == null) return ai;
+    final stt = heard.transcript.isEmpty
+        ? 'Fala: não reconhecida (${_lastSttError ?? 'sem fala detectada'})'
+        : 'Fala: confiança ${(heard.confidence * 100).round()}%';
+    return '$stt\n$ai';
   }
 
   void _resumeSession() {
@@ -284,8 +329,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: _sessionManager,
+      listenable: Listenable.merge([_sessionManager, showDebugInfo]),
       builder: (context, _) {
+        final debug = showDebugInfo.value;
         return Scaffold(
           appBar: AppBar(
             title: Text(_profile?.targetLanguage ?? 'Sessão de conversação'),
@@ -299,7 +345,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         children: [
                           _AppBarBadge(
                             icon: Icons.school_outlined,
-                            label: _profile!.cefrLevel.name.toUpperCase(),
+                            label: _profile!.cefrLevel.label,
                           ),
                           const SizedBox(width: 8),
                           _AppBarBadge(
@@ -317,7 +363,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: Column(
               children: [
                 Expanded(child: _buildStateView(_sessionManager.state)),
-                if (kDebugMode)
+                _buildHeard(),
+                if (debug)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Text(
@@ -328,7 +375,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     ),
                   ),
                 _buildControls(),
-                if (kDebugMode) _buildDebugBar(),
+                if (debug) _buildDebugBar(),
                 const SizedBox(height: 8),
               ],
             ),
@@ -515,18 +562,21 @@ class _StatusView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Rolável: textos longos da IA não estouram a altura da tela.
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 72, color: color ?? Colors.grey),
-          const SizedBox(height: 24),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 20),
-          ),
-        ],
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 72, color: color ?? Colors.grey),
+            const SizedBox(height: 24),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 20),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -603,57 +653,60 @@ class _CorrectionView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Rolável: instruções longas da IA não escondem os botões.
     return Center(
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.orange.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.edit_note, size: 48, color: Colors.orange),
-            const SizedBox(height: 16),
-            const Text(
-              'Atenção',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orange),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              instruction,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 18),
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'O que você quer fazer?',
-              style: TextStyle(fontSize: 15, color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 12, // espaço entre os botões
-              runSpacing: 8, // espaço entre linhas, se quebrar
-              children: [
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.replay),
-                  label: const Text('Repetir instrução'),
-                  onPressed: onRepeat,
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.mic),
-                  label: const Text('Tentar novamente'),
-                  onPressed: onRetry,
-                ),
-              ],
-            ),
-          ],
+      child: SingleChildScrollView(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.edit_note, size: 48, color: Colors.orange),
+              const SizedBox(height: 16),
+              const Text(
+                'Atenção',
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                instruction,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 18),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'O que você quer fazer?',
+                style: TextStyle(fontSize: 15, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 12, // espaço entre os botões
+                runSpacing: 8, // espaço entre linhas, se quebrar
+                children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.replay),
+                    label: const Text('Repetir instrução'),
+                    onPressed: onRepeat,
+                  ),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.mic),
+                    label: const Text('Tentar novamente'),
+                    onPressed: onRetry,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

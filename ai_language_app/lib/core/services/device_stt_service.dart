@@ -63,7 +63,8 @@ class DeviceSttService implements SttService {
   // Silêncio que encerra a escuta: maior antes de o aluno começar a falar
   // (tempo para pensar), menor depois (para a conversa fluir).
   static const _initialPause = Duration(seconds: 5);
-  static const _speechPause = Duration(milliseconds: 1500);
+  // 3 s: com 1,5 s, pausas para pensar cortavam respostas longas.
+  static const _speechPause = Duration(seconds: 3);
 
   // Se o tempo de silêncio já foi reduzido nesta escuta.
   bool _pauseShortened = false;

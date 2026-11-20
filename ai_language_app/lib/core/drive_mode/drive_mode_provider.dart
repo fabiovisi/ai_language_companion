@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'drive_mode_detector.dart';
 
+/// Instância usada pelo app (Home decide a tela; Configurações simula em debug).
+final driveModeProvider = DriveModeProvider();
+
 class DriveModeProvider extends ChangeNotifier {
   final DriveModeDetector _detector = DriveModeDetector();
 
