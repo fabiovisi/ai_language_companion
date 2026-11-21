@@ -124,15 +124,24 @@ Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; p
 - Tema: funciona com a IA real (instruções e ângulo da abertura); fica na Home.
 - Modo: **ainda sem efeito**. Definição do usuário: o modo define a pausa entre o retorno da IA e a nova pergunta. Contínuo = 2 s. Intervalado = 30 s, 1 min ou 2 min, à escolha.
 
+## Sessão das melhorias (etapas 0, 1a e 1b)
+- **Reconhecimento trocado pelo Whisper do Groq** (mesma chave `GROQ_API_KEY`), que
+  identifica o idioma falado. Sem a chave, volta o reconhecimento do navegador/aparelho.
+  Pacote `record` (gravação no Chrome e no Android). Detalhes e testes no plano.
+- **Pedidos de ajuda falando em português**, a qualquer momento: a IA explica as
+  palavras (marcador `{palavra}` para a voz do idioma da aula), refaz a pergunta mais
+  simples; cartão de ajuda na tela. Ideias descartadas no caminho: frase de chamada
+  ("Help", "I need some help") e personagem com nome ("Gabi").
+- Testes: 43, todos passando.
+
 ## Próximos passos
 Ver **`documentacao/plano-melhorias.md`**, com as etapas em ordem:
-0. Teste do reconhecimento em português numa aula de outro idioma (sem código).
-1. Pedidos de ajuda pela fala: palavras desconhecidas ("Essa frase tem palavras que não conheço"), "Como se diz...?", traduzir, repetir, mais devagar.
-2. Comandos de controle pela fala e parada imediata de voz e microfone.
+0, 1a e 1b. Concluídas (reconhecimento com Whisper e pedidos de ajuda pela fala).
+2. Comandos de controle pela fala e parada imediata de voz e microfone; botões da correção saem da tela.
 3. Tela do carro com os serviços reais.
 4. Memória por idioma, resumo da aula, revisão de erros e palavras, retomar de onde parou, "Apagar memória".
 5. Cenas de role-play.
 6. Duração do trajeto e modo intervalado.
 7. Personalização (jeito de corrigir, personalidade, voz e sotaque).
 8. Meta diária, sequência de dias, sugestão de subir de nível.
-Sugestão para a próxima sessão: etapa 0 e etapa 1.
+Próxima: etapa 2.

@@ -11,15 +11,27 @@ class AiTurn {
   final String? correctionReaction; // fala no idioma alvo (ex: "I didn't catch that...")
   final String? instructionPt;      // instrução específica (português até B2; idioma alvo em C1-C2)
 
+  /// Resposta a um pedido de ajuda: explicação no idioma nativo (até B2),
+  /// com as palavras do idioma da aula entre aspas. Quando presente, [text]
+  /// traz a mesma explicação e [followUp], a pergunta com palavras simples.
+  final String? help;
+
+  /// O aluno pediu para falar mais devagar: a pergunta seguinte usa uma
+  /// velocidade mais lenta.
+  final bool slower;
+
   const AiTurn({
     required this.text,
     this.followUp,
     this.correction,
     this.correctionReaction,
     this.instructionPt,
+    this.help,
+    this.slower = false,
   });
 
   bool get hasCorrection => correction != null;
+  bool get isHelp => help != null;
 }
 
 /// Informações de debug que os serviços de IA reais expõem para a tela.
@@ -43,10 +55,15 @@ abstract class ConversationService {
   });
 
   /// [isRetryAfterCorrection]: o aluno está tentando de novo após uma correção.
+  /// [isHelpRequest]: o aluno falou no idioma nativo (pedido de ajuda).
+  /// [targetVersion]: a mesma fala transcrita no idioma da aula, para a IA
+  /// decidir se era ajuda ou uma resposta com sotaque.
   Future<AiTurn> sendTurn({
     required String userUtterance,
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
+    bool isHelpRequest = false,
+    String? targetVersion,
   });
 }

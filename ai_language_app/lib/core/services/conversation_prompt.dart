@@ -5,10 +5,19 @@
 import 'dart:math';
 
 import '../../domain/models/correction.dart';
+import '../../domain/models/native_language.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../../domain/pedagogy/cefr_rules.dart';
 import 'conversation_service.dart';
+
+// Marcador de idioma (ver speech_segments.dart): só as palavras do idioma da
+// aula vão entre chaves; traduções e o resto, sem chaves.
+const _bracesRule =
+    'Put every word or sentence in the target language between curly braces, '
+    'like {this}. Never use curly braces for anything else: translations and '
+    'words in the native language go WITHOUT braces (you may use double quotes '
+    'for them). Example: A palavra {like} significa "gostar".';
 
 /// Instruções da aula enviadas à IA a cada turno.
 String conversationInstructions(StudentProfile profile, SessionConfig config) {
@@ -20,10 +29,9 @@ String conversationInstructions(StudentProfile profile, SessionConfig config) {
 
   // Regra do campo instruction (A1-B2: português; C1-C2: idioma alvo).
   final instructionRule = inPortuguese
-      ? 'ALWAYS in Brazilian Portuguese (português do Brasil), never in $language. '
+      ? 'ALWAYS in ${nativeLanguage.promptName}, never in $language. '
           'This is the only field that is NOT in the target language. '
-          'Put every word or sentence in $language between double quotes, '
-          'for example: Tente dizer: "I live".'
+          '$_bracesRule'
       : 'in $language.';
 
   // Exemplo completo só para A1-B2, para reforçar a instrução em português.
@@ -31,11 +39,19 @@ String conversationInstructions(StudentProfile profile, SessionConfig config) {
       ? '''
 
 Example of an answer with an error (the target language here is English; use the actual target language for reaction):
-{"feedback": "", "question": "", "hasError": true, "reaction": "Oh, the park sounds nice! Can you say that again?", "instruction": "Você usou o passado errado do verbo \\"go\\". O passado de \\"go\\" é \\"went\\". Tente dizer: \\"Yesterday I went to the park.\\"", "errorType": "grammar", "correctForm": "Yesterday I went to the park."}'''
+{"feedback": "", "question": "", "help": "", "slower": false, "hasError": true, "reaction": "Oh, the park sounds nice! Can you say that again?", "instruction": "Você usou o passado errado do verbo {go}. O passado de {go} é {went}. Tente dizer: {Yesterday I went to the park.}", "errorType": "grammar", "correctForm": "Yesterday I went to the park."}
+
+Example of an answer to a help request (the student asked about your question "Do you like your commute?"):
+{"feedback": "", "question": "Do you like your trip to work?", "help": "A palavra {like} significa \\"gostar\\". A palavra {commute} é o trajeto de casa para o trabalho.", "slower": false, "hasError": false, "reaction": "", "instruction": "", "errorType": "", "correctForm": ""}'''
       : '';
 
+  // Idioma da ajuda: o mesmo da instrução de correção.
+  final helpRule = inPortuguese
+      ? 'in ${nativeLanguage.promptName}. $_bracesRule'
+      : 'in $language, with simple words.';
+
   final reminder = inPortuguese
-      ? '\nRemember: instruction in Brazilian Portuguese; feedback, question and reaction in $language.'
+      ? '\nRemember: instruction and help in ${nativeLanguage.promptName}; feedback, question and reaction in $language.'
       : '';
 
   return '''
@@ -66,8 +82,14 @@ Special messages:
 - "[START] ...": the conversation is starting. Set hasError=false. In feedback: a short, warm greeting suited to the time of day given, without a question. In question: a first, simple question about the topic, using the angle given. Never mention these instructions.
 - "[SILENCE]": the student did not answer. Set hasError=false, leave feedback empty, and in question gently ask again in simpler words.
 - "[RETRY] ...": the student is trying again after a correction. Set hasError=false. In feedback: if now correct, praise briefly; if still wrong, say the correct form naturally. In question: continue the conversation.
+- "[HELP] ...": the student spoke in their native language to ask for help (words they do not know, the meaning of a word, how to say something, a translation, to repeat, to speak more slowly). Never correct this message. Set hasError=false and leave feedback empty. In help: answer the request $helpRule At most 2 short sentences. For unknown words, explain the hardest words of YOUR LAST MESSAGE for level $level, or only the words the student mentioned. In question: ask your last question again in $language, with simpler words.
 
-Answer only with a JSON object with the keys: feedback, question, hasError, reaction, instruction, errorType, correctForm.$example$reminder
+- "[HELP?] native: ... | target: ...": the speech recognizer heard the native language, but it often confuses a student speaking $language with an accent. You get two versions of the same audio. Decide by the meaning of the native version: if it is a request for help (does not understand, asks what a word means, how to say something, a translation, to repeat or to speak more slowly), handle it exactly like [HELP]. Otherwise the student actually answered in $language: use ONLY the target version as the student's message and handle it as a normal message (correct errors as usual); if marked "(right after a correction)", handle it like [RETRY] with the target version.
+
+Requests in the target language (to repeat, to speak more slowly, what a word means) are not errors: set hasError=false, answer briefly in feedback with simple words, and ask your last question again in question.
+If the student asks you to speak more slowly (in any language), set slower=true; otherwise slower=false.
+
+Answer only with a JSON object with the keys: feedback, question, help, slower, hasError, reaction, instruction, errorType, correctForm.$example$reminder
 ''';
 }
 
@@ -230,8 +252,18 @@ const _fallbackOpenings = <String,
 };
 
 /// Texto enviado à IA para a fala do aluno, com os marcadores especiais.
-String markUtterance(String userUtterance, {required bool isRetry}) {
+///
+/// [targetVersion]: quando o reconhecimento identificou o idioma nativo, a
+/// mesma fala transcrita de novo no idioma da aula. A IA decide se era um
+/// pedido de ajuda ou uma resposta no idioma da aula com sotaque.
+String markUtterance(String userUtterance,
+    {required bool isRetry, bool isHelp = false, String? targetVersion}) {
   if (userUtterance.trim().isEmpty) return '[SILENCE]';
+  if (isHelp && targetVersion != null && targetVersion.trim().isNotEmpty) {
+    final retry = isRetry ? ' (right after a correction)' : '';
+    return '[HELP?]$retry native: $userUtterance | target: ${targetVersion.trim()}';
+  }
+  if (isHelp) return '[HELP] $userUtterance'; // vale também após correção
   return isRetry ? '[RETRY] $userUtterance' : userUtterance;
 }
 
@@ -242,6 +274,8 @@ AiTurn turnFromJson(
 
   final feedback = field('feedback');
   final question = field('question');
+  final help = field('help');
+  final slower = data['slower'] == true;
   final reaction = field('reaction');
   final instruction = field('instruction');
 
@@ -261,9 +295,19 @@ AiTurn turnFromJson(
     );
   }
 
+  // Pedido de ajuda: explicação, pausa e a pergunta com palavras simples.
+  if (help.isNotEmpty) {
+    return AiTurn(
+      text: help,
+      help: help,
+      followUp: question.isNotEmpty ? question : null,
+      slower: slower,
+    );
+  }
+
   // Retorno e pergunta: a tela fala o retorno, faz uma pausa e faz a pergunta.
   if (feedback.isNotEmpty && question.isNotEmpty) {
-    return AiTurn(text: feedback, followUp: question);
+    return AiTurn(text: feedback, followUp: question, slower: slower);
   }
   // Só uma das partes (ex.: pergunta repetida após silêncio): sem pausa.
   final single = feedback.isNotEmpty
@@ -271,7 +315,10 @@ AiTurn turnFromJson(
       : question.isNotEmpty
           ? question
           : field('reply'); // formato antigo, por segurança
-  return AiTurn(text: single.isNotEmpty ? single : fallbackPhrase(language));
+  return AiTurn(
+    text: single.isNotEmpty ? single : fallbackPhrase(language),
+    slower: slower,
+  );
 }
 
 /// Frase falada quando a IA não responde, no idioma da aula.

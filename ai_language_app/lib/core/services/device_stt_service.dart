@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
@@ -15,9 +16,20 @@ class DeviceSttService implements SttService {
   Completer<SttResult>? _pending;
 
   /// Motivo da última falha, para exibir em debug. Null se não houve erro.
+  @override
   String? lastError;
 
-  static const _empty = SttResult(transcript: '', confidence: 0.0);
+  @override
+  String get engineName => kIsWeb ? 'Navegador' : 'Aparelho';
+
+  @override
+  String? get debugInfo => null;
+
+  // Escuta em um idioma só: não há o que transcrever de novo.
+  @override
+  Future<SttResult?> retranscribe({required String localeId}) async => null;
+
+  static const _empty = SttResult.empty;
 
   @override
   Future<SttResult> recognize({required String localeId}) async {

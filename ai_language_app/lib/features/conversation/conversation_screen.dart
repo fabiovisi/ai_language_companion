@@ -11,6 +11,8 @@ import '../../domain/session/session_state_manager.dart';
 import '../../core/debug/debug_settings.dart';
 import '../../core/permissions/permission_handler.dart';
 import '../../core/services/device_stt_service.dart';
+import '../../core/services/whisper_stt_service.dart';
+import '../../domain/models/native_language.dart';
 import '../../core/services/stt_service.dart';
 import '../../core/services/device_tts_service.dart';
 import '../../core/services/conversation_service.dart';
@@ -30,7 +32,11 @@ class ConversationScreen extends StatefulWidget {
 class _ConversationScreenState extends State<ConversationScreen> {
   final _sessionManager = SessionStateManager();
   final _permissionHandler = AppPermissionHandler();
-  final _stt = DeviceSttService();
+  // Whisper (identifica o idioma falado) quando há chave do Groq;
+  // senão, o reconhecimento do navegador ou do aparelho.
+  final SttService _stt = WhisperSttService.isConfigured
+      ? WhisperSttService()
+      : DeviceSttService();
   final _tts = DeviceTtsService();
   // IA real conforme a chave informada no comando de execução:
   // Groq, senão Gemini, senão mock.
@@ -48,6 +54,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   // Nova pergunta da IA, falada depois do retorno e de uma pausa.
   String? _pendingFollowUp;
+  bool _followUpSlower = false; // o aluno pediu para falar mais devagar
+  bool _lastAiIsHelp = false; // a próxima fala é resposta a um pedido de ajuda
+
+  // Última fala da IA no idioma da aula (a frase sobre a qual o aluno pede ajuda).
+  String? _lastAiTargetText;
+
+  // Cartão de ajuda exibido durante e depois da explicação.
+  String? _helpSentence;
+  String? _helpExplanation;
 
   // Pausa entre o retorno da IA e a nova pergunta (modo contínuo, em teste).
   static const _followUpPause = Duration(seconds: 2);
@@ -55,6 +70,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // Última fala reconhecida e motivo técnico da última falha do STT.
   SttResult? _lastHeard;
   String? _lastSttError;
+  String? _lastSttDebug; // medidas da escuta (ex.: volume), só no debug
 
   // Aguarda escolha do aluno no fluxo de correção
   // true = tentar novamente, false = repetir instrução
@@ -68,7 +84,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String get _instructionLocaleId =>
       CefrRules.instructionLanguage((_profile ?? _defaultProfile).cefrLevel) ==
               InstructionLanguage.portuguese
-          ? 'pt_BR'
+          ? nativeLanguage.localeId
           : _localeId;
 
   @override
@@ -127,20 +143,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _pendingFollowUp = opening.followUp;
       }
 
-      // 1. IA fala
+      // 1. IA fala. A resposta a um pedido de ajuda usa a voz do idioma
+      // nativo, com as palavras entre chaves na voz do idioma da aula.
       _sessionManager.transition(SessionState.aiSpeaking);
-      await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
+      if (_lastAiIsHelp) {
+        await _speakMixed(_lastAiText);
+      } else {
+        _lastAiTargetText = _lastAiText;
+        await _tts.speak(_lastAiText, rate: _rate, localeId: _localeId);
+      }
+      _lastAiIsHelp = false;
       if (_shouldStop()) break;
 
       // 1b. Pausa e nova pergunta, quando a IA deu um retorno antes
+      // (mais devagar, se o aluno pediu)
       final followUp = _pendingFollowUp;
+      final slower = _followUpSlower;
       _pendingFollowUp = null;
+      _followUpSlower = false;
       if (followUp != null && followUp.isNotEmpty) {
         await Future.delayed(_followUpPause);
         if (_shouldStop()) break;
         _lastAiText = followUp;
+        _lastAiTargetText = followUp;
         _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
-        await _tts.speak(followUp, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
+        await _tts.speak(followUp,
+            rate: slower ? _slowerRate : _rate, localeId: _localeId);
         if (_shouldStop()) break;
       }
 
@@ -150,19 +178,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _rememberHeard(sttResult);
       if (_shouldStop()) break;
 
-      // 3. Processa
+      // 3. Processa. Fala no idioma nativo: pode ser pedido de ajuda ou uma
+      // resposta com sotaque; a IA decide com as duas versões.
       _sessionManager.transition(SessionState.processing);
+      final targetVersion = await _targetVersionOf(sttResult);
       final aiTurn = await _conversation.sendTurn(
         userUtterance: sttResult.transcript,
         profile: _profile ?? _defaultProfile,
         config: _config ?? _defaultConfig,
+        isHelpRequest: _isHelpRequest(sttResult),
+        targetVersion: targetVersion?.transcript,
       );
       if (_shouldStop()) break;
+      _applyTargetVersion(aiTurn, targetVersion);
 
       // 4. Fluxo de correção
       if (aiTurn.hasCorrection) {
         // IA reage no idioma alvo
         _lastAiText = aiTurn.correctionReaction!;
+        _lastAiTargetText = _lastAiText;
+        _clearHelpCard();
         _instructionPt = aiTurn.instructionPt!;
 
         _sessionManager.transition(SessionState.aiSpeaking);
@@ -202,41 +237,98 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (_shouldStop()) break;
 
         _sessionManager.transition(SessionState.processing);
+        final retryTarget = await _targetVersionOf(retryResult);
         final retryTurn = await _conversation.sendTurn(
           userUtterance: retryResult.transcript,
           profile: _profile ?? _defaultProfile,
           config: _config ?? _defaultConfig,
           isRetryAfterCorrection: true,
+          // Pedido de ajuda no lugar da nova tentativa: a IA explica e a
+          // conversa segue a partir da pergunta repetida.
+          isHelpRequest: _isHelpRequest(retryResult),
+          targetVersion: retryTarget?.transcript,
         );
         if (_shouldStop()) break;
+        _applyTargetVersion(retryTurn, retryTarget);
 
-        _lastAiText = retryTurn.text;
-        _pendingFollowUp = retryTurn.followUp;
-        _instructionPt = '';
+        _setNextTurn(retryTurn);
       } else {
-        _lastAiText = aiTurn.text;
-        _pendingFollowUp = aiTurn.followUp;
-        _instructionPt = '';
+        _setNextTurn(aiTurn);
       }
     }
 
     _cycleRunning = false;
   }
 
-  // Fala a instrução de correção. Em A1-B2 ela está em português, com os
+  // Prepara a próxima fala da IA (retorno ou ajuda) e a pergunta seguinte.
+  void _setNextTurn(AiTurn turn) {
+    _lastAiText = turn.text;
+    _lastAiIsHelp = turn.isHelp;
+    _pendingFollowUp = turn.followUp;
+    _followUpSlower = turn.slower;
+    _instructionPt = '';
+
+    // Cartão de ajuda: a frase sobre a qual o aluno pediu ajuda (a última
+    // fala da IA no idioma da aula) e a explicação. Fica visível até a
+    // próxima resposta do aluno que não seja outro pedido de ajuda.
+    if (turn.isHelp) {
+      _helpSentence = _lastAiTargetText;
+      _helpExplanation = turn.text;
+    } else {
+      _clearHelpCard();
+    }
+  }
+
+  void _clearHelpCard() {
+    _helpSentence = null;
+    _helpExplanation = null;
+  }
+
+  // Fala no idioma nativo = possível pedido de ajuda (só o Whisper identifica
+  // o idioma). Pode ser engano por causa do sotaque; a IA confirma.
+  bool _isHelpRequest(SttResult result) =>
+      result.transcript.isNotEmpty &&
+      result.language == nativeLanguage.whisperName;
+
+  // Fala identificada no idioma nativo: transcreve de novo no idioma da aula,
+  // para a IA decidir se era pedido de ajuda ou resposta com sotaque.
+  Future<SttResult?> _targetVersionOf(SttResult result) async =>
+      _isHelpRequest(result) ? _stt.retranscribe(localeId: _localeId) : null;
+
+  // Não era ajuda (a IA usou a versão no idioma da aula): o balão "Você"
+  // passa a mostrar essa versão.
+  void _applyTargetVersion(AiTurn turn, SttResult? targetVersion) {
+    if (targetVersion == null || targetVersion.transcript.isEmpty) return;
+    final decision = turn.isHelp ? 'pedido de ajuda' : 'resposta no idioma da aula';
+    _lastSttDebug = '${_lastSttDebug ?? ''} · 2ª transcrição: $decision';
+    if (!turn.isHelp) _lastHeard = targetVersion;
+  }
+
+  SpeechRate get _rate => _config?.speechRate ?? SpeechRate.normal;
+
+  // Uma velocidade abaixo da escolhida (para "mais devagar").
+  SpeechRate get _slowerRate => switch (_rate) {
+        SpeechRate.normal => SpeechRate.slow,
+        _ => SpeechRate.verySlow,
+      };
+
+  // Fala a instrução de correção.
+  Future<void> _speakInstruction() => _speakMixed(_instructionPt);
+
+  // Fala um texto no idioma das instruções (nativo em A1-B2), com os
   // exemplos no idioma da aula entre aspas: cada trecho usa a voz do seu idioma.
-  Future<void> _speakInstruction() async {
-    final rate = _config?.speechRate ?? SpeechRate.normal;
+  Future<void> _speakMixed(String text) async {
+    final rate = _rate;
     if (_instructionLocaleId == _localeId) {
-      await _tts.speak(_instructionPt, rate: rate, localeId: _localeId);
+      await _tts.speak(text, rate: rate, localeId: _localeId);
       return;
     }
-    for (final segment in splitQuoted(_instructionPt)) {
+    for (final segment in splitTargetLanguage(text)) {
       if (_shouldStop()) return;
       await _tts.speak(
         segment.text,
         rate: rate,
-        localeId: segment.quoted ? _localeId : _instructionLocaleId,
+        localeId: segment.target ? _localeId : _instructionLocaleId,
       );
     }
   }
@@ -251,6 +343,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _rememberHeard(SttResult result) {
     _lastHeard = result;
     _lastSttError = _stt.lastError;
+    _lastSttDebug = _stt.debugInfo;
   }
 
   // Última fala do aluno, como parte da conversa.
@@ -313,9 +406,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final heard = _lastHeard;
     if (heard == null) return ai;
     final stt = heard.transcript.isEmpty
-        ? 'Fala: não reconhecida (${_lastSttError ?? 'sem fala detectada'})'
-        : 'Fala: confiança ${(heard.confidence * 100).round()}%';
-    return '$stt\n$ai';
+        ? 'Fala (${_stt.engineName}): não reconhecida '
+            '(${_lastSttError ?? 'sem fala detectada'})'
+        : 'Fala (${_stt.engineName}): confiança '
+            '${(heard.confidence * 100).round()}%'
+            '${heard.language != null ? ' · idioma: ${heard.language}' : ''}';
+    final levels = _lastSttDebug;
+    return levels == null ? '$stt\n$ai' : '$stt\nVolume: $levels\n$ai';
   }
 
   void _resumeSession() {
@@ -396,6 +493,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Widget _buildStateView(SessionState state) {
+    // Cartão de ajuda: durante a explicação, a pergunta mais simples e a
+    // escuta da resposta.
+    final explanation = _helpExplanation;
+    if (explanation != null &&
+        (state == SessionState.aiSpeaking ||
+            state == SessionState.listening)) {
+      final listening = state == SessionState.listening;
+      final explaining = _lastAiText == explanation;
+      return _HelpView(
+        sentence: _helpSentence,
+        explanation: explanation,
+        statusIcon: listening ? Icons.mic : Icons.volume_up_outlined,
+        statusColor: listening ? Colors.red : const Color(0xFF176B65),
+        status: listening
+            ? 'Ouvindo...'
+            : explaining
+                ? 'IA explicando...'
+                : 'IA falando: "${displayText(_lastAiText)}"',
+      );
+    }
+
     return switch (state) {
       SessionState.preparing => const _StatusView(
           icon: Icons.hourglass_top,
@@ -413,7 +531,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       SessionState.aiSpeaking => _StatusView(
           icon: Icons.volume_up_outlined,
           color: const Color(0xFF176B65),
-          message: 'IA falando...\n\n"$_lastAiText"',
+          message: 'IA falando...\n\n"${displayText(_lastAiText)}"',
         ),
       SessionState.listening => const _StatusView(
           icon: Icons.mic,
@@ -425,7 +543,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           message: 'Processando...',
         ),
       SessionState.correcting => _CorrectionView(
-          instruction: _instructionPt,
+          instruction: displayText(_instructionPt),
           onRetry: () => _correctionChoice?.complete(true),
           onRepeat: () => _correctionChoice?.complete(false),
         ),
@@ -645,6 +763,93 @@ class _PausedView extends StatelessWidget {
             onPressed: onResume,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Cartão de ajuda: a frase sobre a qual o aluno pediu ajuda (com as palavras
+/// explicadas em destaque), a explicação e o que o app está fazendo agora.
+class _HelpView extends StatelessWidget {
+  final String? sentence;
+  final String explanation; // com as chaves do marcador de idioma
+  final IconData statusIcon;
+  final Color statusColor;
+  final String status;
+
+  const _HelpView({
+    required this.sentence,
+    required this.explanation,
+    required this.statusIcon,
+    required this.statusColor,
+    required this.status,
+  });
+
+  static const _blue = Color(0xFF1E5AA8);
+
+  @override
+  Widget build(BuildContext context) {
+    final sentence = this.sentence;
+    const label = TextStyle(
+        fontSize: 13, fontWeight: FontWeight.bold, color: _blue);
+
+    return Center(
+      child: SingleChildScrollView(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: _blue.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _blue.withValues(alpha: 0.35)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (sentence != null && sentence.isNotEmpty) ...[
+                const Text('A FRASE', style: label),
+                const SizedBox(height: 6),
+                Text.rich(
+                  TextSpan(
+                    style: const TextStyle(
+                        fontSize: 18, fontStyle: FontStyle.italic),
+                    children: [
+                      for (final part
+                          in highlightWords(sentence, targetWords(explanation)))
+                        TextSpan(
+                          text: part.text,
+                          style: part.highlight
+                              ? const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontStyle: FontStyle.normal,
+                                  color: _blue)
+                              : null,
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+              const Text('EXPLICAÇÃO', style: label),
+              const SizedBox(height: 6),
+              Text(displayText(explanation),
+                  style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Icon(statusIcon, color: statusColor, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(status,
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.grey)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

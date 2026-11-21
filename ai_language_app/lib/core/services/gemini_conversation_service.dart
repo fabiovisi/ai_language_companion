@@ -51,8 +51,14 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
+    bool isHelpRequest = false,
+    String? targetVersion,
   }) =>
-      _turn(markUtterance(userUtterance, isRetry: isRetryAfterCorrection),
+      _turn(
+          markUtterance(userUtterance,
+              isRetry: isRetryAfterCorrection,
+              isHelp: isHelpRequest,
+              targetVersion: targetVersion),
           userUtterance, profile, config);
 
   Future<AiTurn> _turn(String message, String userUtterance,
@@ -150,6 +156,8 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
     'properties': {
       'feedback': {'type': 'STRING'},
       'question': {'type': 'STRING'},
+      'help': {'type': 'STRING'},
+      'slower': {'type': 'BOOLEAN'},
       'hasError': {'type': 'BOOLEAN'},
       'reaction': {'type': 'STRING'},
       'instruction': {'type': 'STRING'},
