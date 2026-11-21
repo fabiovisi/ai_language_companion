@@ -20,6 +20,7 @@ import '../../core/services/gemini_conversation_service.dart';
 import '../../core/services/groq_conversation_service.dart';
 import '../../core/services/mock_conversation_service.dart';
 import '../../core/services/speech_segments.dart';
+import '../../core/services/voice_commands.dart';
 import '../../domain/pedagogy/cefr_rules.dart';
 
 class ConversationScreen extends StatefulWidget {
@@ -72,9 +73,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _lastSttError;
   String? _lastSttDebug; // medidas da escuta (ex.: volume), só no debug
 
-  // Aguarda escolha do aluno no fluxo de correção
-  // true = tentar novamente, false = repetir instrução
-  Completer<bool>? _correctionChoice;
+  // Correção por voz: etapa atual (permite retomar depois de uma pausa).
+  bool _inCorrection = false;
+  _CorrectionStage _correctionStage = _CorrectionStage.reaction;
+  String _correctionReaction = '';
+  int _correctionSilences = 0;
+
+  // Pausa por voz e parada imediata.
+  SessionState? _previousState;
+  bool _pauseListening = false;
 
   // Código do idioma da aula para STT e TTS (ex.: 'en_US').
   String get _localeId =>
@@ -107,7 +114,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   void _onStateChanged() {
-    if (_sessionManager.state == SessionState.ready && !_cycleRunning) {
+    final state = _sessionManager.state;
+    final previous = _previousState;
+    _previousState = state;
+
+    // Parada imediata: ao pausar ou encerrar (por voz ou pelo botão), a voz e
+    // o microfone param na hora.
+    if ((state == SessionState.paused || state == SessionState.ended) &&
+        previous != state) {
+      _tts.stop();
+      _stt.cancel();
+    }
+    // Saiu da pausa (ex.: botão "Retomar"): para a escuta do "continuar" e o
+    // aviso da pausa.
+    if (previous == SessionState.paused && state != SessionState.paused) {
+      _tts.stop();
+      _stt.cancel();
+    }
+
+    if (state == SessionState.ready && !_cycleRunning) {
       _runCycle();
     }
   }
@@ -130,6 +155,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _cycleRunning = true;
 
     while (mounted && !_shouldStop()) {
+      // Correção em andamento (também ao retomar depois de uma pausa).
+      if (_inCorrection) {
+        await _runCorrection();
+        continue;
+      }
+
       // 0. Abertura: saudação e primeira pergunta pedidas à IA
       // (hora do dia, tema e nível), com reserva fixa no idioma da aula.
       if (_lastAiText.isEmpty) {
@@ -145,6 +176,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
       // 1. IA fala. A resposta a um pedido de ajuda usa a voz do idioma
       // nativo, com as palavras entre chaves na voz do idioma da aula.
+      // Ao retomar depois de uma pausa, a última fala é repetida.
       _sessionManager.transition(SessionState.aiSpeaking);
       if (_lastAiIsHelp) {
         await _speakMixed(_lastAiText);
@@ -152,31 +184,36 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _lastAiTargetText = _lastAiText;
         await _tts.speak(_lastAiText, rate: _rate, localeId: _localeId);
       }
-      _lastAiIsHelp = false;
       if (_shouldStop()) break;
+      _lastAiIsHelp = false;
 
       // 1b. Pausa e nova pergunta, quando a IA deu um retorno antes
-      // (mais devagar, se o aluno pediu)
+      // (mais devagar, se o aluno pediu). A pergunta só é descartada depois
+      // de falada, para não se perder se a aula for pausada no meio.
       final followUp = _pendingFollowUp;
       final slower = _followUpSlower;
-      _pendingFollowUp = null;
-      _followUpSlower = false;
       if (followUp != null && followUp.isNotEmpty) {
         await Future.delayed(_followUpPause);
         if (_shouldStop()) break;
         _lastAiText = followUp;
         _lastAiTargetText = followUp;
+        _pendingFollowUp = null;
+        _followUpSlower = false;
         _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
         await _tts.speak(followUp,
             rate: slower ? _slowerRate : _rate, localeId: _localeId);
         if (_shouldStop()) break;
+      } else {
+        _pendingFollowUp = null;
+        _followUpSlower = false;
       }
 
       // 2. Ouve o aluno
       _sessionManager.transition(SessionState.listening);
       final sttResult = await _stt.recognize(localeId: _localeId);
-      _rememberHeard(sttResult);
       if (_shouldStop()) break;
+      _rememberHeard(sttResult);
+      if (await _handleControlCommand(sttResult)) break;
 
       // 3. Processa. Fala no idioma nativo: pode ser pedido de ajuda ou uma
       // resposta com sotaque; a IA decide com as duas versões.
@@ -192,72 +229,167 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (_shouldStop()) break;
       _applyTargetVersion(aiTurn, targetVersion);
 
-      // 4. Fluxo de correção
+      // 4. Erro: começa a correção (próxima volta do ciclo).
       if (aiTurn.hasCorrection) {
-        // IA reage no idioma alvo
-        _lastAiText = aiTurn.correctionReaction!;
-        _lastAiTargetText = _lastAiText;
-        _clearHelpCard();
-        _instructionPt = aiTurn.instructionPt!;
-
-        _sessionManager.transition(SessionState.aiSpeaking);
-        await _tts.speak(_lastAiText, rate: _config?.speechRate ?? SpeechRate.normal, localeId: _localeId);
-        if (_shouldStop()) break;
-
-        // Fala a instrução logo após a reação: em um app de voz, o aluno
-        // (ao volante) não lê o cartão.
-        _lastAiText = _instructionPt;
-        _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
-        await _speakInstruction();
-        if (_shouldStop()) break;
-
-        // Loop de correção — repete instrução até aluno escolher tentar
-        bool wantsToRetry = false;
-        while (!wantsToRetry && !_shouldStop()) {
-          _sessionManager.transition(SessionState.correcting);
-
-          _correctionChoice = Completer<bool>();
-          wantsToRetry = await _correctionChoice!.future;
-          _correctionChoice = null;
-
-          if (!wantsToRetry && !_shouldStop()) {
-            // Repete apenas a instrução (português até B2; idioma alvo em C1-C2)
-            _lastAiText = _instructionPt;
-            _sessionManager.transition(SessionState.aiSpeaking);
-            await _speakInstruction();
-          }
-        }
-
-        if (_shouldStop()) break;
-
-        // Aluno tenta novamente
-        _sessionManager.transition(SessionState.listening);
-        final retryResult = await _stt.recognize(localeId: _localeId);
-        _rememberHeard(retryResult);
-        if (_shouldStop()) break;
-
-        _sessionManager.transition(SessionState.processing);
-        final retryTarget = await _targetVersionOf(retryResult);
-        final retryTurn = await _conversation.sendTurn(
-          userUtterance: retryResult.transcript,
-          profile: _profile ?? _defaultProfile,
-          config: _config ?? _defaultConfig,
-          isRetryAfterCorrection: true,
-          // Pedido de ajuda no lugar da nova tentativa: a IA explica e a
-          // conversa segue a partir da pergunta repetida.
-          isHelpRequest: _isHelpRequest(retryResult),
-          targetVersion: retryTarget?.transcript,
-        );
-        if (_shouldStop()) break;
-        _applyTargetVersion(retryTurn, retryTarget);
-
-        _setNextTurn(retryTurn);
+        _startCorrection(aiTurn);
       } else {
         _setNextTurn(aiTurn);
       }
     }
 
     _cycleRunning = false;
+    if (mounted && _sessionManager.state == SessionState.paused) {
+      _listenWhilePaused();
+    }
+  }
+
+  // — Correção por voz —
+
+  void _startCorrection(AiTurn turn) {
+    _clearHelpCard();
+    _correctionReaction = turn.correctionReaction!;
+    _instructionPt = turn.instructionPt!;
+    _inCorrection = true;
+    _correctionStage = _CorrectionStage.reaction;
+    _correctionSilences = 0;
+  }
+
+  // Reação → instrução → pergunta → escuta. "Repetir" repete a instrução;
+  // qualquer outra fala é a nova tentativa. Pode ser retomada depois de uma
+  // pausa, a partir da etapa em que parou.
+  Future<void> _runCorrection() async {
+    if (_correctionStage == _CorrectionStage.reaction) {
+      _lastAiText = _correctionReaction;
+      _lastAiTargetText = _correctionReaction;
+      _sessionManager.transition(SessionState.aiSpeaking);
+      await _tts.speak(_correctionReaction, rate: _rate, localeId: _localeId);
+      if (_shouldStop()) return;
+      _correctionStage = _CorrectionStage.instruction;
+    }
+
+    if (_correctionStage == _CorrectionStage.instruction) {
+      _sessionManager.transition(SessionState.correcting); // cartão na tela
+      await _speakInstruction();
+      if (_shouldStop()) return;
+      _correctionStage = _CorrectionStage.prompt;
+    }
+
+    if (_correctionStage == _CorrectionStage.prompt) {
+      _sessionManager.transition(SessionState.correcting);
+      await _speakCorrectionPrompt();
+      if (_shouldStop()) return;
+      _correctionStage = _CorrectionStage.listening;
+    }
+
+    _sessionManager.transition(SessionState.listening);
+    final result = await _stt.recognize(localeId: _localeId);
+    if (_shouldStop()) return;
+    _rememberHeard(result);
+    if (await _handleControlCommand(result)) return;
+
+    if (detectCommand(result.transcript,
+            allowed: const {VoiceCommand.repeatInstruction}) !=
+        null) {
+      _correctionStage = _CorrectionStage.instruction;
+      return;
+    }
+
+    // Primeiro silêncio: repete a pergunta. No segundo, segue a conversa.
+    if (result.transcript.isEmpty && _correctionSilences == 0) {
+      _correctionSilences++;
+      _correctionStage = _CorrectionStage.prompt;
+      return;
+    }
+
+    // Nova tentativa (ou pedido de ajuda, ou o segundo silêncio).
+    _sessionManager.transition(SessionState.processing);
+    final target = await _targetVersionOf(result);
+    final turn = await _conversation.sendTurn(
+      userUtterance: result.transcript,
+      profile: _profile ?? _defaultProfile,
+      config: _config ?? _defaultConfig,
+      isRetryAfterCorrection: true,
+      // Pedido de ajuda no lugar da nova tentativa: a IA explica e a
+      // conversa segue a partir da pergunta repetida.
+      isHelpRequest: _isHelpRequest(result),
+      targetVersion: target?.transcript,
+    );
+    if (_shouldStop()) {
+      _correctionStage = _CorrectionStage.instruction; // ao retomar
+      return;
+    }
+    _applyTargetVersion(turn, target);
+    _inCorrection = false;
+    _setNextTurn(turn);
+  }
+
+  // Pergunta depois da instrução, no idioma da instrução.
+  Future<void> _speakCorrectionPrompt() {
+    final native = _instructionLocaleId == nativeLanguage.localeId;
+    final language = (_profile ?? _defaultProfile).targetLanguage;
+    return _tts.speak(
+      correctionPrompt(native ? null : language),
+      rate: _rate,
+      localeId: _instructionLocaleId,
+    );
+  }
+
+  // — Comandos de controle e pausa por voz —
+
+  // "Pausa" e "encerrar": tratados pelo app, na hora. Devolve true se a fala
+  // era um desses comandos.
+  Future<bool> _handleControlCommand(SttResult result) async {
+    switch (detectCommand(result.transcript,
+        allowed: const {VoiceCommand.pause, VoiceCommand.end})) {
+      case VoiceCommand.pause:
+        _sessionManager.transition(SessionState.paused);
+        return true;
+      case VoiceCommand.end:
+        await _endByVoice();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Despede-se no idioma da aula e encerra.
+  Future<void> _endByVoice() async {
+    final language = (_profile ?? _defaultProfile).targetLanguage;
+    _lastAiText = goodbyePhrase(language);
+    _clearHelpCard();
+    _inCorrection = false;
+    _sessionManager.transition(SessionState.aiSpeaking);
+    await _tts.speak(_lastAiText, rate: _rate, localeId: _localeId);
+    if (mounted) _sessionManager.transition(SessionState.ended);
+  }
+
+  // Durante a pausa, o microfone fica ligado esperando "continuar" ou
+  // "encerrar". Só envia áudio ao Whisper quando detecta fala; outras falas
+  // são ignoradas.
+  Future<void> _listenWhilePaused() async {
+    if (_pauseListening) return;
+    _pauseListening = true;
+    try {
+      await _tts.speak(pausedPrompt,
+          rate: _rate, localeId: nativeLanguage.localeId);
+      while (mounted && _sessionManager.state == SessionState.paused) {
+        final result = await _stt.recognize(localeId: _localeId);
+        if (!mounted || _sessionManager.state != SessionState.paused) return;
+        switch (detectCommand(result.transcript,
+            allowed: const {VoiceCommand.resume, VoiceCommand.end})) {
+          case VoiceCommand.resume:
+            _resumeSession();
+            return;
+          case VoiceCommand.end:
+            await _endByVoice();
+            return;
+          default:
+            break; // ignora outras falas
+        }
+      }
+    } finally {
+      _pauseListening = false;
+    }
   }
 
   // Prepara a próxima fala da IA (retorno ou ajuda) e a pergunta seguinte.
@@ -415,7 +547,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     return levels == null ? '$stt\n$ai' : '$stt\nVolume: $levels\n$ai';
   }
 
+  // Ao retomar no meio da correção, a instrução é repetida para dar contexto.
   void _resumeSession() {
+    if (_inCorrection && _correctionStage == _CorrectionStage.listening) {
+      _correctionStage = _CorrectionStage.instruction;
+    }
     _sessionManager.transition(SessionState.ready);
   }
 
@@ -493,6 +629,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Widget _buildStateView(SessionState state) {
+    // Cartão de correção: durante a instrução, a pergunta e a escuta da nova
+    // tentativa.
+    if (_inCorrection &&
+        _correctionStage != _CorrectionStage.reaction &&
+        (state == SessionState.correcting ||
+            state == SessionState.listening)) {
+      return _CorrectionView(
+        instruction: displayText(_instructionPt),
+        listening: state == SessionState.listening,
+      );
+    }
+
     // Cartão de ajuda: durante a explicação, a pergunta mais simples e a
     // escuta da resposta.
     final explanation = _helpExplanation;
@@ -544,8 +692,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       SessionState.correcting => _CorrectionView(
           instruction: displayText(_instructionPt),
-          onRetry: () => _correctionChoice?.complete(true),
-          onRepeat: () => _correctionChoice?.complete(false),
+          listening: false,
         ),
       SessionState.interval => const _StatusView(
           icon: Icons.pause_circle_outline,
@@ -670,7 +817,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   void dispose() {
-    _correctionChoice?.complete(false);
     _stt.cancel(); // desliga o microfone ao sair da tela
     _tts.stop(); // interrompe a voz ao sair da tela
     _sessionManager.removeListener(_onStateChanged);
@@ -756,6 +902,10 @@ class _PausedView extends StatelessWidget {
           const Icon(Icons.pause_circle, size: 72, color: Color(0xFF176B65)),
           const SizedBox(height: 24),
           const Text('Sessão pausada', style: TextStyle(fontSize: 20)),
+          const SizedBox(height: 8),
+          const Text('Diga "continuar" para retomar, ou "encerrar".',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 15, color: Colors.grey)),
           const SizedBox(height: 24),
           ElevatedButton.icon(
             icon: const Icon(Icons.play_arrow),
@@ -855,20 +1005,20 @@ class _HelpView extends StatelessWidget {
   }
 }
 
+/// Etapas da correção por voz.
+enum _CorrectionStage { reaction, instruction, prompt, listening }
+
+/// Cartão de correção: a instrução e o que o app está fazendo agora.
+/// Sem botões: o aluno responde por voz.
 class _CorrectionView extends StatelessWidget {
   final String instruction;
-  final VoidCallback onRetry;
-  final VoidCallback onRepeat;
+  final bool listening;
 
-  const _CorrectionView({
-    required this.instruction,
-    required this.onRetry,
-    required this.onRepeat,
-  });
+  const _CorrectionView({required this.instruction, required this.listening});
 
   @override
   Widget build(BuildContext context) {
-    // Rolável: instruções longas da IA não escondem os botões.
+    // Rolável: instruções longas da IA não estouram a altura da tela.
     return Center(
       child: SingleChildScrollView(
         child: Container(
@@ -898,25 +1048,22 @@ class _CorrectionView extends StatelessWidget {
                 style: const TextStyle(fontSize: 18),
               ),
               const SizedBox(height: 24),
-              const Text(
-                'O que você quer fazer?',
-                style: TextStyle(fontSize: 15, color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 12, // espaço entre os botões
-                runSpacing: 8, // espaço entre linhas, se quebrar
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.replay),
-                    label: const Text('Repetir instrução'),
-                    onPressed: onRepeat,
-                  ),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.mic),
-                    label: const Text('Tentar novamente'),
-                    onPressed: onRetry,
+                  Icon(listening ? Icons.mic : Icons.volume_up_outlined,
+                      color:
+                          listening ? Colors.red : const Color(0xFF176B65),
+                      size: 20),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      listening
+                          ? 'Ouvindo... diga a frase de novo, ou "repetir"'
+                          : 'IA explicando...',
+                      style:
+                          const TextStyle(fontSize: 15, color: Colors.grey),
+                    ),
                   ),
                 ],
               ),

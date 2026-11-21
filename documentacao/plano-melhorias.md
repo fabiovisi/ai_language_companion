@@ -140,6 +140,21 @@ instruções curtas, porque o limite gratuito do Groq é por tokens por dia.
   (decisão do usuário: só voz). A IA passa a falar a pergunta
   "Quer tentar novamente ou ouvir a instrução de novo?".
 - Com o Whisper, os comandos podem ser ditos no idioma nativo ("pausa", "encerra").
+
+**Implementada (aguardando teste).** Decisões do usuário: retomar dizendo "continuar"
+(microfone ligado na pausa); botões Pausar/Retomar/Encerrar ficam; na correção, a
+próxima fala já é a nova tentativa.
+- `voice_commands.dart`: pausar, continuar, encerrar e repetir, em português e nos
+  idiomas da aula, só quando são a fala inteira (ignora acentos, pontuação e
+  cortesias). Detectados pelo app, sem a IA.
+- Parada imediata de voz e microfone ao pausar/encerrar (voz ou botão).
+- Pausa: aviso falado; microfone esperando "continuar"/"encerrar"; outras falas
+  ignoradas. Ao retomar, a IA repete a última fala (na correção, repete a instrução).
+- Encerrar por voz: despedida no idioma da aula.
+- Correção sem botões: reação → instrução → pergunta ("Tente dizer a frase de novo, ou
+  diga 'repetir'...") → escuta. "Repetir" repete a instrução; primeiro silêncio repete
+  a pergunta; segundo silêncio segue a conversa.
+- "Muda de assunto" ainda não tem regra própria (a IA pode atender pelo contexto).
 - **Parar voz e microfone na hora** em que a aula pausa ou termina (hoje só valem
   depois da fala atual). Necessário para o comando "pausa".
 
@@ -236,5 +251,5 @@ Esforço: baixo.
 
 ## Ordem atual
 
-Etapas 1a e 1b concluídas. Próxima: etapa 2 (comandos de voz e parada imediata) →
-demais etapas.
+Etapas 1a e 1b concluídas. Etapa 2 implementada, **aguardando teste do usuário**.
+Depois: etapa 3 → demais etapas.
