@@ -53,14 +53,9 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
-    bool isHelpRequest = false,
-    String? targetVersion,
   }) =>
       _turn(
-          markUtterance(userUtterance,
-              isRetry: isRetryAfterCorrection,
-              isHelp: isHelpRequest,
-              targetVersion: targetVersion),
+          markUtterance(userUtterance, isRetry: isRetryAfterCorrection),
           userUtterance, profile, config);
 
   Future<AiTurn> _turn(String message, String userUtterance,

@@ -93,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.language,
                       title: '${s.targetLanguage} · ${s.cefrLevel.label}',
                       subtitle: 'Fala ${SettingsScreen.speechRateLabel(s.speechRate).toLowerCase()}'
-                          ' · Modo ${SettingsScreen.modeLabel(s.mode).toLowerCase()}',
+                          ' · Modo ${SettingsScreen.paceLabel(s.mode, s.intervalSeconds).toLowerCase()}',
                       onTap: _openSettings,
                     ),
                     const SizedBox(height: 8),

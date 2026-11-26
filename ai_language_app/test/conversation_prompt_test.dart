@@ -74,32 +74,9 @@ void main() {
   test('marcadores da fala do aluno', () {
     expect(markUtterance('', isRetry: false), '[SILENCE]');
     expect(markUtterance('I went', isRetry: true), '[RETRY] I went');
-    expect(markUtterance('O que é commute?', isRetry: false, isHelp: true),
-        '[HELP] O que é commute?');
-    // Pedido de ajuda logo após uma correção também é ajuda.
-    expect(markUtterance('Não entendi', isRetry: true, isHelp: true),
-        '[HELP] Não entendi');
-  });
-
-  test('idioma nativo identificado: vai com as duas versões para a IA decidir',
-      () {
-    expect(
-      markUtterance('eu tenho estado surfando desde que eu estava 25 anos',
-          isRetry: false,
-          isHelp: true,
-          targetVersion: 'I have been surfing since I was 25 years old.'),
-      '[HELP?] native: eu tenho estado surfando desde que eu estava 25 anos'
-      ' | target: I have been surfing since I was 25 years old.',
-    );
-    expect(
-      markUtterance('não entendi', isRetry: true, isHelp: true,
-          targetVersion: "I didn't understand."),
-      startsWith('[HELP?] (right after a correction) native: não entendi'),
-    );
-    // Sem a segunda versão (ex.: falha na transcrição), segue como ajuda.
-    expect(markUtterance('não entendi', isRetry: false, isHelp: true,
-            targetVersion: ''),
-        '[HELP] não entendi');
+    // Pedidos de ajuda não têm marcador: a IA os reconhece pelo sentido.
+    expect(markUtterance('What does commute mean?', isRetry: false),
+        'What does commute mean?');
   });
 
   test('instruções explicam o pedido de ajuda no idioma nativo', () {
@@ -114,8 +91,10 @@ void main() {
           mode: SessionMode.continuous, speechRate: SpeechRate.normal),
     );
 
-    expect(text, contains('[HELP]'));
-    expect(text, contains('[HELP?]'));
+    expect(text, contains('Help requests:'));
+    expect(text, contains('arrives TRANSLATED'));
+    expect(text, contains('When in doubt, it is a normal message'));
+    expect(text, isNot(contains('[HELP')));
     expect(text, contains('Brazilian Portuguese'));
     expect(text, contains('help, slower'));
   });

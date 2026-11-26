@@ -84,8 +84,6 @@ class MockConversationService implements ConversationService {
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
-    bool isHelpRequest = false, // o mock não identifica idioma; ignora
-    String? targetVersion,
   }) async {
     await Future.delayed(const Duration(milliseconds: 500));
 

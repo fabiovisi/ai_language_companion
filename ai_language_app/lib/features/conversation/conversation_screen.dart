@@ -66,7 +66,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _helpExplanation;
 
   // Pausa entre o retorno da IA e a nova pergunta (modo contínuo, em teste).
+  // No modo intervalado, depois de um comentário sobre a resposta do aluno,
+  // vale o tempo escolhido (com contagem na tela); na abertura e na ajuda,
+  // sempre 2 s.
   static const _followUpPause = Duration(seconds: 2);
+
+  // A próxima pergunta usa o intervalo do modo intervalado.
+  bool _followUpSpaced = false;
+  // Pausa no meio do intervalo: ao retomar, vai direto à pergunta.
+  bool _skipInterval = false;
+  // Intervalo em andamento e segundos restantes (para a contagem na tela).
+  Completer<void>? _intervalDone;
+  final _intervalRemaining = ValueNotifier<int>(0);
 
   // Última fala reconhecida e motivo técnico da última falha do STT.
   SttResult? _lastHeard;
@@ -124,6 +135,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         previous != state) {
       _tts.stop();
       _stt.cancel();
+    }
+    // Pausa no meio do intervalo: ao retomar, a pergunta vem sem nova espera.
+    if (state == SessionState.paused && previous == SessionState.interval) {
+      _skipInterval = true;
     }
     // Saiu da pausa (ex.: botão "Retomar"): para a escuta do "continuar" e o
     // aviso da pausa.
@@ -193,12 +208,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final followUp = _pendingFollowUp;
       final slower = _followUpSlower;
       if (followUp != null && followUp.isNotEmpty) {
-        await Future.delayed(_followUpPause);
+        final spaced = _followUpSpaced &&
+            !_skipInterval &&
+            (_config?.mode ?? SessionMode.continuous) == SessionMode.spaced;
+        _skipInterval = false;
+        if (spaced) {
+          await _runInterval(_config!.spacedInterval);
+        } else {
+          await Future.delayed(_followUpPause);
+        }
         if (_shouldStop()) break;
         _lastAiText = followUp;
         _lastAiTargetText = followUp;
         _pendingFollowUp = null;
         _followUpSlower = false;
+        _followUpSpaced = false;
         _sessionManager.transition(SessionState.aiSpeaking); // atualiza o texto na tela
         await _tts.speak(followUp,
             rate: slower ? _slowerRate : _rate, localeId: _localeId);
@@ -206,6 +230,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       } else {
         _pendingFollowUp = null;
         _followUpSlower = false;
+        _followUpSpaced = false;
       }
 
       // 2. Ouve o aluno
@@ -215,19 +240,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _rememberHeard(sttResult);
       if (await _handleControlCommand(sttResult)) break;
 
-      // 3. Processa. Fala no idioma nativo: pode ser pedido de ajuda ou uma
-      // resposta com sotaque; a IA decide com as duas versões.
+      // 3. Processa. A IA reconhece pelo sentido se é um pedido de ajuda.
       _sessionManager.transition(SessionState.processing);
-      final targetVersion = await _targetVersionOf(sttResult);
       final aiTurn = await _conversation.sendTurn(
         userUtterance: sttResult.transcript,
         profile: _profile ?? _defaultProfile,
         config: _config ?? _defaultConfig,
-        isHelpRequest: _isHelpRequest(sttResult),
-        targetVersion: targetVersion?.transcript,
       );
       if (_shouldStop()) break;
-      _applyTargetVersion(aiTurn, targetVersion);
 
       // 4. Erro: começa a correção (próxima volta do ciclo).
       if (aiTurn.hasCorrection) {
@@ -302,23 +322,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
 
     // Nova tentativa (ou pedido de ajuda, ou o segundo silêncio).
+    // Um pedido de ajuda no lugar da nova tentativa é reconhecido pela IA:
+    // ela explica e a conversa segue a partir da pergunta repetida.
     _sessionManager.transition(SessionState.processing);
-    final target = await _targetVersionOf(result);
     final turn = await _conversation.sendTurn(
       userUtterance: result.transcript,
       profile: _profile ?? _defaultProfile,
       config: _config ?? _defaultConfig,
       isRetryAfterCorrection: true,
-      // Pedido de ajuda no lugar da nova tentativa: a IA explica e a
-      // conversa segue a partir da pergunta repetida.
-      isHelpRequest: _isHelpRequest(result),
-      targetVersion: target?.transcript,
     );
     if (_shouldStop()) {
       _correctionStage = _CorrectionStage.instruction; // ao retomar
       return;
     }
-    _applyTargetVersion(turn, target);
     _inCorrection = false;
     _setNextTurn(turn);
   }
@@ -363,6 +379,63 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (mounted) _sessionManager.transition(SessionState.ended);
   }
 
+  // — Modo intervalado —
+
+  // Espera o intervalo antes da próxima pergunta. O microfone fica ligado
+  // esperando "continuar" (segue antes do fim), "pausa" ou "encerrar"; outras
+  // falas são ignoradas, e só há envio ao Whisper quando ele detecta fala.
+  Future<void> _runInterval(Duration duration) async {
+    final done = Completer<void>();
+    _intervalDone = done;
+    var left = duration.inSeconds;
+    _intervalRemaining.value = left;
+    _sessionManager.transition(SessionState.interval);
+
+    final ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      left--;
+      _intervalRemaining.value = left < 0 ? 0 : left;
+      if (left <= 0) _finishInterval();
+    });
+    try {
+      while (!done.isCompleted && !_shouldStop()) {
+        final started = DateTime.now();
+        final result = await _stt.recognize(localeId: _localeId);
+        if (done.isCompleted || _shouldStop()) break;
+        switch (detectCommand(result.transcript, allowed: const {
+          VoiceCommand.resume,
+          VoiceCommand.pause,
+          VoiceCommand.end,
+        })) {
+          case VoiceCommand.resume:
+            _finishInterval();
+          case VoiceCommand.pause:
+            _sessionManager.transition(SessionState.paused);
+          case VoiceCommand.end:
+            await _endByVoice();
+          default:
+            // Se a escuta falhar na hora (ex.: microfone indisponível),
+            // espera um pouco em vez de repetir sem parar.
+            if (DateTime.now().difference(started) <
+                const Duration(seconds: 1)) {
+              await Future.delayed(const Duration(seconds: 1));
+            }
+        }
+      }
+    } finally {
+      ticker.cancel();
+      _intervalDone = null;
+    }
+  }
+
+  // Encerra o intervalo: fim do tempo, "continuar" ou botão.
+  void _finishInterval() {
+    final done = _intervalDone;
+    if (done == null || done.isCompleted) return;
+    done.complete();
+    _stt.cancel(); // interrompe a escuta do intervalo
+  }
+
   // Durante a pausa, o microfone fica ligado esperando "continuar" ou
   // "encerrar". Só envia áudio ao Whisper quando detecta fala; outras falas
   // são ignoradas.
@@ -397,6 +470,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _lastAiText = turn.text;
     _lastAiIsHelp = turn.isHelp;
     _pendingFollowUp = turn.followUp;
+    // Intervalo só depois de um comentário sobre a resposta (não na ajuda).
+    _followUpSpaced = !turn.isHelp;
     _followUpSlower = turn.slower;
     _instructionPt = '';
 
@@ -414,26 +489,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _clearHelpCard() {
     _helpSentence = null;
     _helpExplanation = null;
-  }
-
-  // Fala no idioma nativo = possível pedido de ajuda (só o Whisper identifica
-  // o idioma). Pode ser engano por causa do sotaque; a IA confirma.
-  bool _isHelpRequest(SttResult result) =>
-      result.transcript.isNotEmpty &&
-      result.language == nativeLanguage.whisperName;
-
-  // Fala identificada no idioma nativo: transcreve de novo no idioma da aula,
-  // para a IA decidir se era pedido de ajuda ou resposta com sotaque.
-  Future<SttResult?> _targetVersionOf(SttResult result) async =>
-      _isHelpRequest(result) ? _stt.retranscribe(localeId: _localeId) : null;
-
-  // Não era ajuda (a IA usou a versão no idioma da aula): o balão "Você"
-  // passa a mostrar essa versão.
-  void _applyTargetVersion(AiTurn turn, SttResult? targetVersion) {
-    if (targetVersion == null || targetVersion.transcript.isEmpty) return;
-    final decision = turn.isHelp ? 'pedido de ajuda' : 'resposta no idioma da aula';
-    _lastSttDebug = '${_lastSttDebug ?? ''} · 2ª transcrição: $decision';
-    if (!turn.isHelp) _lastHeard = targetVersion;
   }
 
   SpeechRate get _rate => _config?.speechRate ?? SpeechRate.normal;
@@ -544,7 +599,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
             '${(heard.confidence * 100).round()}%'
             '${heard.language != null ? ' · idioma: ${heard.language}' : ''}';
     final levels = _lastSttDebug;
-    return levels == null ? '$stt\n$ai' : '$stt\nVolume: $levels\n$ai';
+    final voice = _tts.debugInfo;
+    return [
+      stt,
+      if (levels != null) 'Volume: $levels',
+      if (voice != null) 'Voz: $voice',
+      ai,
+    ].join('\n');
   }
 
   // Ao retomar no meio da correção, a instrução é repetida para dar contexto.
@@ -694,9 +755,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           instruction: displayText(_instructionPt),
           listening: false,
         ),
-      SessionState.interval => const _StatusView(
-          icon: Icons.pause_circle_outline,
-          message: 'Intervalo — próximo diálogo em breve.',
+      SessionState.interval => _IntervalView(
+          remaining: _intervalRemaining,
+          comment: displayText(_lastAiText),
+          onContinue: _finishInterval,
         ),
       SessionState.paused => _PausedView(onResume: _resumeSession),
       SessionState.ended => const _StatusView(
@@ -724,7 +786,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         state == SessionState.aiSpeaking ||
         state == SessionState.listening ||
         state == SessionState.processing ||
-        state == SessionState.correcting;
+        state == SessionState.correcting ||
+        state == SessionState.interval;
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -821,6 +884,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _tts.stop(); // interrompe a voz ao sair da tela
     _sessionManager.removeListener(_onStateChanged);
     _sessionManager.dispose();
+    _intervalRemaining.dispose();
     super.dispose();
   }
 }
@@ -999,6 +1063,64 @@ class _HelpView extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Intervalo do modo intervalado: o último comentário da IA, a contagem até a
+/// próxima pergunta e como seguir antes.
+class _IntervalView extends StatelessWidget {
+  final ValueNotifier<int> remaining;
+  final String comment;
+  final VoidCallback onContinue;
+
+  const _IntervalView({
+    required this.remaining,
+    required this.comment,
+    required this.onContinue,
+  });
+
+  static String _clock(int seconds) =>
+      '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.hourglass_bottom,
+                size: 64, color: Color(0xFF176B65)),
+            const SizedBox(height: 16),
+            if (comment.isNotEmpty) ...[
+              Text('"$comment"',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 18, fontStyle: FontStyle.italic)),
+              const SizedBox(height: 24),
+            ],
+            const Text('Próxima pergunta em',
+                style: TextStyle(fontSize: 15, color: Colors.grey)),
+            ValueListenableBuilder<int>(
+              valueListenable: remaining,
+              builder: (context, s, _) => Text(_clock(s),
+                  style: const TextStyle(
+                      fontSize: 40, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 8),
+            const Text('Diga "continuar" para seguir agora.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 15, color: Colors.grey)),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.skip_next),
+              label: const Text('Continuar agora'),
+              onPressed: onContinue,
+            ),
+          ],
         ),
       ),
     );

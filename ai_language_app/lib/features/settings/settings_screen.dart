@@ -10,13 +10,30 @@ import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../common/option_widgets.dart';
 
+/// Uma opção de modo: contínuo, ou intervalado com o tempo em segundos.
+typedef _Pace = ({SessionMode mode, int seconds});
+
 /// Configurações que quase não mudam entre uma aula e outra.
 /// Cada mudança é guardada no aparelho.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
-  static String modeLabel(SessionMode m) =>
-      m == SessionMode.continuous ? 'Contínuo' : 'Intervalado';
+  /// Modo da sessão com o intervalo (ex.: "Intervalado · 1 min").
+  static String paceLabel(SessionMode mode, int seconds) =>
+      mode == SessionMode.continuous
+          ? 'Contínuo'
+          : 'Intervalado · ${intervalLabel(seconds)}';
+
+  // Opções de modo: contínuo e os intervalos do modo intervalado.
+  static final List<_Pace> _paces = [
+    (mode: SessionMode.continuous, seconds: 0),
+    for (final s in spacedIntervalOptions) (mode: SessionMode.spaced, seconds: s),
+  ];
+
+  static String _paceDescription(_Pace p) => p.mode == SessionMode.continuous
+      ? 'A próxima pergunta vem 2 s depois do comentário da IA'
+      : 'A IA espera ${intervalLabel(p.seconds)} antes da próxima pergunta. '
+          'Diga "continuar" para seguir antes';
 
   static String speechRateLabel(SpeechRate r) => switch (r) {
         SpeechRate.normal => 'Normal',
@@ -67,16 +84,22 @@ class SettingsScreen extends StatelessWidget {
             const SectionLabel('Sessão'),
             ConfigCard(
               icon: Icons.repeat,
-              title: modeLabel(s.mode),
+              title: paceLabel(s.mode, s.intervalSeconds),
               subtitle: 'Modo da sessão',
-              onTap: () => showOptionsSheet<SessionMode>(
+              onTap: () => showOptionsSheet<_Pace>(
                 context: context,
                 title: 'Modo da sessão',
-                options: SessionMode.values,
-                selected: s.mode,
-                label: modeLabel,
-                onSelect: (m) =>
-                    appSettings.update((c) => c.copyWith(mode: m)),
+                options: _paces,
+                selected: s.mode == SessionMode.continuous
+                    ? (mode: SessionMode.continuous, seconds: 0)
+                    : (mode: SessionMode.spaced, seconds: s.intervalSeconds),
+                label: (p) => paceLabel(p.mode, p.seconds),
+                description: _paceDescription,
+                onSelect: (p) => appSettings.update((c) => c.copyWith(
+                      mode: p.mode,
+                      intervalSeconds:
+                          p.mode == SessionMode.spaced ? p.seconds : null,
+                    )),
               ),
             ),
             ConfigCard(

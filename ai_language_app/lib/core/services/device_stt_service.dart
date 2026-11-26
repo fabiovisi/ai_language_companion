@@ -25,9 +25,7 @@ class DeviceSttService implements SttService {
   @override
   String? get debugInfo => null;
 
-  // Escuta em um idioma só: não há o que transcrever de novo.
-  @override
-  Future<SttResult?> retranscribe({required String localeId}) async => null;
+
 
   static const _empty = SttResult.empty;
 

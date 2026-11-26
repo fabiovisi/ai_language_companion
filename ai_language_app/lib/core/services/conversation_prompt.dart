@@ -82,12 +82,17 @@ Special messages:
 - "[START] ...": the conversation is starting. Set hasError=false. In feedback: a short, warm greeting suited to the time of day given, without a question. In question: a first, simple question about the topic, using the angle given. Never mention these instructions.
 - "[SILENCE]": the student did not answer. Set hasError=false, leave feedback empty, and in question gently ask again in simpler words.
 - "[RETRY] ...": the student is trying again after a correction. Set hasError=false. In feedback: if now correct, praise briefly; if still wrong, say the correct form naturally. In question: continue the conversation.
-- "[HELP] ...": the student spoke in their native language to ask for help (words they do not know, the meaning of a word, how to say something, a translation, to repeat, to speak more slowly). Never correct this message. Set hasError=false and leave feedback empty. In help: answer the request $helpRule At most 2 short sentences. For unknown words, explain the hardest words of YOUR LAST MESSAGE for level $level, or only the words the student mentioned. In question: ask your last question again in $language, with simpler words.
 
-- "[HELP?] native: ... | target: ...": the speech recognizer heard the native language, but it often confuses a student speaking $language with an accent. You get two versions of the same audio. Decide by the meaning of the native version: if it is a request for help (does not understand, asks what a word means, how to say something, a translation, to repeat or to speak more slowly), handle it exactly like [HELP]. Otherwise the student actually answered in $language: use ONLY the target version as the student's message and handle it as a normal message (correct errors as usual); if marked "(right after a correction)", handle it like [RETRY] with the target version.
 
-Requests in the target language (to repeat, to speak more slowly, what a word means) are not errors: set hasError=false, answer briefly in feedback with simple words, and ask your last question again in question.
-If the student asks you to speak more slowly (in any language), set slower=true; otherwise slower=false.
+
+
+Help requests:
+- Instead of answering, the student may ask for help. The speech recognizer always writes in $language, so a request said in the native language arrives TRANSLATED into $language.
+- It is a help request ONLY when the student explicitly asks about the language or about your last message: the meaning of a word or of your sentence ("What does X mean?", "This phrase has words I don't know", "I didn't understand the question"), how to say something ("How do you say X?"), a translation ("Translate it"), to repeat ("Can you repeat?") or to speak more slowly.
+- NOT help requests: any answer about the topic, including "I don't know", "I'm not sure", "Maybe" or very short answers. Treat them as normal messages. When in doubt, it is a normal message.
+- A help request can also come after a correction, marked [RETRY]; handle it as a help request.
+- For a help request: never correct it. Set hasError=false and leave feedback empty. In help: answer the request $helpRule At most 2 short sentences. For unknown words, explain the hardest words of YOUR LAST MESSAGE for level $level, or only the words the student mentioned. In question: ask your last question again in $language, with simpler words.
+- If the student asks you to speak more slowly, set slower=true; otherwise slower=false.
 
 Answer only with a JSON object with the keys: feedback, question, help, slower, hasError, reaction, instruction, errorType, correctForm.$example$reminder
 ''';
@@ -252,18 +257,9 @@ const _fallbackOpenings = <String,
 };
 
 /// Texto enviado à IA para a fala do aluno, com os marcadores especiais.
-///
-/// [targetVersion]: quando o reconhecimento identificou o idioma nativo, a
-/// mesma fala transcrita de novo no idioma da aula. A IA decide se era um
-/// pedido de ajuda ou uma resposta no idioma da aula com sotaque.
-String markUtterance(String userUtterance,
-    {required bool isRetry, bool isHelp = false, String? targetVersion}) {
+/// Pedidos de ajuda não têm marcador: a IA os reconhece pelo sentido.
+String markUtterance(String userUtterance, {required bool isRetry}) {
   if (userUtterance.trim().isEmpty) return '[SILENCE]';
-  if (isHelp && targetVersion != null && targetVersion.trim().isNotEmpty) {
-    final retry = isRetry ? ' (right after a correction)' : '';
-    return '[HELP?]$retry native: $userUtterance | target: ${targetVersion.trim()}';
-  }
-  if (isHelp) return '[HELP] $userUtterance'; // vale também após correção
   return isRetry ? '[RETRY] $userUtterance' : userUtterance;
 }
 

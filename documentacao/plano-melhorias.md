@@ -251,4 +251,48 @@ Esforço: baixo.
 
 ## Ordem atual
 
-Etapas 1a, 1b e 2 concluídas e testadas. Próxima: etapa 3 → demais etapas.
+Etapas 1a, 1b e 2 concluídas e testadas.
+
+**Revisão das etapas 1a e 1b (depois dos testes):**
+- **Identificação automática de idioma removida.** Com sotaque, o Whisper errava o
+  idioma (português, espanhol, até islandês) e traduzia a fala; os remendos (segunda
+  transcrição, marcadores `[HELP]`/`[HELP?]`) pioravam a conversa. Agora o Whisper
+  transcreve **sempre no idioma da aula**; um pedido em português chega traduzido para o
+  idioma da aula (ex.: "This phrase has words that I don't know.").
+- **A IA reconhece o pedido de ajuda pelo sentido**, com critério rígido: só quando o
+  aluno pergunta explicitamente sobre a língua ou sobre a fala dela (significado,
+  "não entendi", como se diz, traduzir, repetir, mais devagar). "I don't know" e
+  respostas curtas são respostas normais; na dúvida, resposta normal. Ajuda em
+  português até Intermediário avançado. Uma chamada ao Whisper por fala.
+- Limite: no balão "Você", o pedido feito em português aparece traduzido.
+- **Voz no navegador sem o flutter_tts** (`web_speech*.dart`): o pacote guardava o
+  estado "falando" e, quando o aviso de fim da frase se perdia (vozes do Google), passava
+  a ignorar todas as frases, em silêncio, até o F5. Agora cada frase é criada do zero,
+  com prazo; se a voz do Google falhar (erro, prazo, fim rápido demais), troca para a
+  voz local do sistema pelo resto da sessão e repete a frase. Debug mostra "Voz:".
+  No celular, continua o flutter_tts.
+- Resultado nos testes do usuário: interação mais natural.
+
+**Decisão do usuário:** concluir primeiro uma **versão funcional no celular**; a solução
+para o carro fica para depois. Ordem:
+1. ~~Modo intervalado (parte da etapa 6)~~ — **feito.** Modo com 4 opções (Contínuo;
+   Intervalado 30 s, 1 min, 2 min), guardado no aparelho. No intervalado, depois do
+   comentário da IA: estado "Intervalo" com contagem, microfone ligado esperando
+   "continuar"/"pausa"/"encerrar" (decisão do usuário), botão "Continuar agora". Na
+   saudação e na ajuda, sempre 2 s. Pausa no meio do intervalo: ao retomar, a pergunta
+   vem sem nova contagem.
+2. Memória e resumo da aula (etapa 4). ← **próximo**
+3. Teste no tablet Android (voz, escuta e Whisper no aparelho).
+4. Cenas de role-play (etapa 5).
+5. Personalização (etapa 7) e hábito (etapa 8).
+
+**Para depois, junto com a solução para o carro:** etapa 3 (tela do carro, hoje com as
+respostas simuladas, acessível só por "Simular modo carro") e a duração do trajeto
+(etapa 6).
+
+Consulta feita sobre o carro (sem decisão): o Android Auto só aceita mídia, mensagens,
+chamadas, navegação, pontos de interesse, casa conectada e clima (vídeo, jogos e
+navegador só parado); não há categoria para conversa com IA. O CarPlay criou em 2026 a
+categoria "apps de conversa por voz" (autorização da Apple; sem texto ou imagem nas
+respostas; exige Mac e conta de desenvolvedor). Caminho provável no Android: modo carro
+no próprio celular, som pelo Bluetooth.

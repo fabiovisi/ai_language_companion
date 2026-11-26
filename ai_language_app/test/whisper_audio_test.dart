@@ -235,6 +235,23 @@ void main() {
       expect(r.transcript, isEmpty);
     });
 
+    test('confiança mais baixa do idioma fixo ainda é aceita', () {
+      // Ex.: um pedido em português transcrito como inglês.
+      final r = sttResultFromWhisperJson({
+        'language': 'English',
+        'text': " This phrase has words that I don't know.",
+        'segments': [
+          {
+            'text': " This phrase has words that I don't know.",
+            'avg_logprob': -1.2,
+            'no_speech_prob': 0.3,
+          },
+        ],
+      });
+
+      expect(r.transcript, "This phrase has words that I don't know.");
+    });
+
     test('sem trechos: usa o texto', () {
       final r = sttResultFromWhisperJson({'language': 'english', 'text': 'Hi'});
 

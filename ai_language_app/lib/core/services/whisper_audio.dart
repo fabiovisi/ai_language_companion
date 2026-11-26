@@ -191,6 +191,9 @@ bool isLikelyHallucination(String text) {
 /// - trechos que o Whisper considera provavelmente silêncio são descartados,
 ///   porque em áudio quase vazio ele às vezes "inventa" frases como
 ///   "Thank you." ou "Obrigado.".
+///
+/// Os limites toleram a confiança mais baixa do idioma fixo (ex.: um pedido
+/// em português transcrito como inglês), sem deixar passar áudio vazio.
 SttResult sttResultFromWhisperJson(Map<String, dynamic> data) {
   final language = (data['language'] as String?)?.trim().toLowerCase();
   final segments = (data['segments'] as List?)?.whereType<Map>().toList();
@@ -209,7 +212,7 @@ SttResult sttResultFromWhisperJson(Map<String, dynamic> data) {
   final kept = segments.where((s) {
     final noSpeech = (s['no_speech_prob'] as num?)?.toDouble() ?? 0.0;
     final logProb = (s['avg_logprob'] as num?)?.toDouble() ?? 0.0;
-    return noSpeech < 0.4 && logProb > -1.0;
+    return noSpeech < 0.5 && logProb > -1.5;
   }).toList();
   if (kept.isEmpty) return SttResult.empty;
 

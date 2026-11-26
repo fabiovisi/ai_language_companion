@@ -55,15 +55,11 @@ abstract class ConversationService {
   });
 
   /// [isRetryAfterCorrection]: o aluno está tentando de novo após uma correção.
-  /// [isHelpRequest]: o aluno falou no idioma nativo (pedido de ajuda).
-  /// [targetVersion]: a mesma fala transcrita no idioma da aula, para a IA
-  /// decidir se era ajuda ou uma resposta com sotaque.
+  /// Pedidos de ajuda são reconhecidos pela IA pelo sentido da fala.
   Future<AiTurn> sendTurn({
     required String userUtterance,
     required StudentProfile profile,
     required SessionConfig config,
     bool isRetryAfterCorrection = false,
-    bool isHelpRequest = false,
-    String? targetVersion,
   });
 }

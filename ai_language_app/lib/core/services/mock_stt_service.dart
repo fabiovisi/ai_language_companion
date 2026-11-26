@@ -29,8 +29,5 @@ class MockSttService implements SttService {
   }
 
   @override
-  Future<SttResult?> retranscribe({required String localeId}) async => null;
-
-  @override
   Future<void> cancel() async {}
 }

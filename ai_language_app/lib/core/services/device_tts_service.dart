@@ -5,15 +5,35 @@ import 'package:flutter_tts/flutter_tts.dart';
 
 import '../../domain/models/session_config.dart';
 import 'tts_service.dart';
+import 'voice_choice.dart';
+import 'web_speech.dart';
 
 /// TTS usando a voz do próprio aparelho ou navegador (gratuito).
+///
+/// - Navegador: voz do Chrome usada diretamente (ver web_speech.dart), com
+///   prazo por frase e troca para a voz local do sistema se a voz do Google
+///   falhar.
+/// - Celular: flutter_tts.
 class DeviceTtsService implements TtsService {
   final FlutterTts _tts = FlutterTts();
   bool _isSpeaking = false;
   bool _configured = false;
 
+  // Navegador: idiomas cuja voz do Google falhou nesta sessão (passam a usar
+  // a voz local do sistema), última voz usada e última falha.
+  final Set<String> _webFallback = {};
+  String? _lastVoice;
+  String? _lastError;
+
   @override
   bool get isSpeaking => _isSpeaking;
+
+  @override
+  String? get debugInfo {
+    if (!kIsWeb) return null;
+    final voice = _lastVoice ?? 'padrão';
+    return _lastError == null ? voice : '$voice · falha: $_lastError';
+  }
 
   @override
   Future<void> speak(
@@ -24,21 +44,17 @@ class DeviceTtsService implements TtsService {
     if (text.trim().isEmpty) return;
     await _configureOnce();
 
-    // flutter_tts usa o formato 'en-US'; o app usa 'en_US'.
+    // A voz usa o formato 'en-US'; o app usa 'en_US'.
     final lang = localeId.replaceAll('_', '-');
-    await _tts.setLanguage(lang);
-    if (kIsWeb) {
-      final voice = await _preferredWebVoice(lang);
-      if (voice != null) await _tts.setVoice(voice);
-    }
-    await _tts.setSpeechRate(_rateValue(rate) * _rateFactor(lang));
+    final rateValue = _rateValue(rate) * _rateFactor(lang);
 
     _isSpeaking = true;
     try {
-      // Segurança: se o aviso de fim nunca chegar, não trava a aula.
-      await _tts.speak(text).timeout(_maxDuration(text), onTimeout: () async {
-        await _tts.stop();
-      });
+      if (kIsWeb) {
+        await _speakWeb(text, lang, rateValue);
+      } else {
+        await _speakDevice(text, lang, rateValue);
+      }
     } finally {
       _isSpeaking = false;
     }
@@ -46,15 +62,63 @@ class DeviceTtsService implements TtsService {
 
   @override
   Future<void> stop() async {
-    await _tts.stop();
+    if (kIsWeb) {
+      webCancel();
+    } else {
+      await _tts.stop();
+    }
     _isSpeaking = false;
+  }
+
+  // — Navegador —
+
+  // Fala a frase; se a voz falhar (erro, prazo esgotado ou fim rápido demais),
+  // troca para a voz local do idioma pelo resto da sessão e repete a frase.
+  Future<void> _speakWeb(String text, String lang, double rate) async {
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      final fallback = _webFallback.contains(lang);
+      final voice = chooseWebVoice(webVoices(), lang, fallback: fallback);
+      _lastVoice = voice?.name;
+
+      final watch = Stopwatch()..start();
+      final outcome = await webSpeak(text,
+          lang: lang,
+          voiceName: voice?.name,
+          rate: rate,
+          timeout: speakTimeout(text, rate));
+
+      if (outcome == WebSpeakOutcome.cancelled) return; // pausa ou saída
+      final tooFast = outcome == WebSpeakOutcome.completed &&
+          finishedTooFast(text, watch.elapsed, rate);
+      if (outcome == WebSpeakOutcome.completed && !tooFast) return;
+
+      _lastError =
+          '${tooFast ? 'terminou sem falar' : outcome.name} (${voice?.name ?? lang})';
+      if (fallback) return; // já estava na voz local: segue a aula
+      _webFallback.add(lang);
+    }
+  }
+
+  // — Celular —
+
+  Future<void> _speakDevice(String text, String lang, double rate) async {
+    await _tts.setLanguage(lang);
+    await _tts.setSpeechRate(rate);
+    // Segurança: se o aviso de fim nunca chegar, não trava a aula.
+    await _tts.speak(text).timeout(speakTimeout(text, rate * 2),
+        onTimeout: () async {
+      await _tts.stop();
+    });
   }
 
   Future<void> _configureOnce() async {
     if (_configured) return;
-    // Faz o speak() só terminar quando a fala acabar.
-    await _tts.awaitSpeakCompletion(true);
-    if (kIsWeb) await _waitForVoices();
+    if (kIsWeb) {
+      await _waitForVoices();
+    } else {
+      // Faz o speak() só terminar quando a fala acabar.
+      await _tts.awaitSpeakCompletion(true);
+    }
     _configured = true;
   }
 
@@ -63,39 +127,9 @@ class DeviceTtsService implements TtsService {
   // Confere a cada 0,1 s e desiste após 2 s, para nunca travar a aula.
   Future<void> _waitForVoices() async {
     for (var i = 0; i < 20; i++) {
-      final voices = await _tts.getVoices;
-      if (voices is List && voices.isNotEmpty) return;
+      if (webVoices().isNotEmpty) return;
       await Future.delayed(const Duration(milliseconds: 100));
     }
-  }
-
-  // Voz escolhida por idioma no navegador (guardada para não procurar de novo).
-  final Map<String, Map<String, String>?> _webVoices = {};
-
-  // No navegador, o flutter_tts pega a primeira voz do idioma, que no Windows
-  // costuma ser uma voz da Microsoft, mais robótica. Prefere as vozes do Google.
-  Future<Map<String, String>?> _preferredWebVoice(String lang) async {
-    if (_webVoices.containsKey(lang)) return _webVoices[lang];
-
-    Map<String, String>? first;
-    Map<String, String>? google;
-    final voices = await _tts.getVoices;
-    if (voices is List) {
-      for (final v in voices) {
-        if (v is! Map) continue;
-        final voice = {
-          'name': '${v['name'] ?? ''}',
-          'locale': '${v['locale'] ?? ''}',
-        };
-        if (voice['locale']!.toLowerCase() != lang.toLowerCase()) continue;
-        first ??= voice;
-        if (google == null && voice['name']!.contains('Google')) google = voice;
-      }
-    }
-
-    final chosen = google ?? first;
-    _webVoices[lang] = chosen;
-    return chosen;
   }
 
   // Ajuste de velocidade por idioma, só no navegador: algumas vozes falam
@@ -121,8 +155,4 @@ class DeviceTtsService implements TtsService {
       SpeechRate.verySlow => 0.3,
     };
   }
-
-  // Tempo máximo generoso: 10 s + 150 ms por caractere.
-  Duration _maxDuration(String text) =>
-      Duration(milliseconds: 10000 + text.length * 150);
 }

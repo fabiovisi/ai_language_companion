@@ -7,6 +7,7 @@ class AppSettings {
   final CefrLevel cefrLevel;
   final String? topic; // null = tema livre
   final SessionMode mode;
+  final int intervalSeconds; // modo intervalado: 30, 60 ou 120
   final SpeechRate speechRate;
   final bool showDebugInfo;
 
@@ -15,6 +16,7 @@ class AppSettings {
     this.cefrLevel = CefrLevel.a2,
     this.topic,
     this.mode = SessionMode.continuous,
+    this.intervalSeconds = defaultSpacedIntervalSeconds,
     this.speechRate = SpeechRate.normal,
     this.showDebugInfo = false,
   });
@@ -24,6 +26,7 @@ class AppSettings {
     CefrLevel? cefrLevel,
     String? Function()? topic, // função para permitir voltar a null
     SessionMode? mode,
+    int? intervalSeconds,
     SpeechRate? speechRate,
     bool? showDebugInfo,
   }) =>
@@ -32,6 +35,7 @@ class AppSettings {
         cefrLevel: cefrLevel ?? this.cefrLevel,
         topic: topic != null ? topic() : this.topic,
         mode: mode ?? this.mode,
+        intervalSeconds: intervalSeconds ?? this.intervalSeconds,
         speechRate: speechRate ?? this.speechRate,
         showDebugInfo: showDebugInfo ?? this.showDebugInfo,
       );
@@ -41,6 +45,7 @@ class AppSettings {
         'cefrLevel': cefrLevel.name,
         'topic': topic,
         'mode': mode.name,
+        'intervalSeconds': intervalSeconds,
         'speechRate': speechRate.name,
         'showDebugInfo': showDebugInfo,
       };
@@ -51,6 +56,7 @@ class AppSettings {
     const d = AppSettings();
     T byName<T extends Enum>(List<T> values, Object? name, T fallback) =>
         values.firstWhere((v) => v.name == name, orElse: () => fallback);
+    final interval = json['intervalSeconds'];
 
     return AppSettings(
       targetLanguage: json['targetLanguage'] is String
@@ -59,13 +65,20 @@ class AppSettings {
       cefrLevel: byName(CefrLevel.values, json['cefrLevel'], d.cefrLevel),
       topic: json['topic'] is String ? json['topic'] as String : null,
       mode: byName(SessionMode.values, json['mode'], d.mode),
+      intervalSeconds: spacedIntervalOptions.contains(interval)
+          ? interval as int
+          : d.intervalSeconds,
       speechRate: byName(SpeechRate.values, json['speechRate'], d.speechRate),
       showDebugInfo: json['showDebugInfo'] == true,
     );
   }
 
-  SessionConfig toSessionConfig() =>
-      SessionConfig(topic: topic, mode: mode, speechRate: speechRate);
+  SessionConfig toSessionConfig() => SessionConfig(
+        topic: topic,
+        mode: mode,
+        speechRate: speechRate,
+        spacedInterval: Duration(seconds: intervalSeconds),
+      );
 
   StudentProfile toStudentProfile() => StudentProfile(
         targetLanguage: targetLanguage,

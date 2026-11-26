@@ -51,6 +51,36 @@ void main() {
     expect(showDebugInfo.value, isTrue);
   });
 
+  test('modo intervalado: guarda o intervalo e passa para a sessão', () async {
+    final store = _MemoryStore();
+    await SettingsController(store).update((s) =>
+        s.copyWith(mode: SessionMode.spaced, intervalSeconds: 120));
+
+    final reopened = SettingsController(store);
+    await reopened.load();
+
+    expect(reopened.value.mode, SessionMode.spaced);
+    expect(reopened.value.intervalSeconds, 120);
+    expect(reopened.value.toSessionConfig().spacedInterval,
+        const Duration(minutes: 2));
+  });
+
+  test('intervalo inválido ou ausente volta ao padrão (1 min)', () async {
+    final store = _MemoryStore()
+      ..data['app_settings_v1'] = '{"mode": "spaced", "intervalSeconds": 45}';
+    final controller = SettingsController(store);
+    await controller.load();
+
+    expect(controller.value.mode, SessionMode.spaced);
+    expect(controller.value.intervalSeconds, 60);
+  });
+
+  test('rótulo do intervalo', () {
+    expect(intervalLabel(30), '30 s');
+    expect(intervalLabel(60), '1 min');
+    expect(intervalLabel(120), '2 min');
+  });
+
   test('tema pode voltar a ser livre', () async {
     final controller = SettingsController(_MemoryStore());
     await controller.update((s) => s.copyWith(topic: () => 'Viagem'));

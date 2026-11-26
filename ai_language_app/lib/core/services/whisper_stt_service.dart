@@ -32,10 +32,6 @@ class WhisperSttService implements SttService {
   Completer<void>? _stopSignal;
   bool _cancelled = false;
 
-  // Última fala, só na memória e só até a próxima escuta: permite transcrever
-  // de novo com o idioma fixo (ver retranscribe).
-  Uint8List? _lastWav;
-
   @override
   String get engineName => 'Whisper';
 
@@ -50,7 +46,6 @@ class WhisperSttService implements SttService {
     lastError = null;
     debugInfo = null;
     _cancelled = false;
-    _lastWav = null; // descarta o áudio da fala anterior
 
     final bool allowed;
     try {
@@ -66,23 +61,17 @@ class WhisperSttService implements SttService {
 
     final pcm = await _record();
     if (pcm == null || _cancelled) return SttResult.empty;
-    final wav = wavFromPcm16(pcm, sampleRate: _sampleRate);
-    _lastWav = wav;
-    return _transcribe(wav);
-  }
-
-  @override
-  Future<SttResult?> retranscribe({required String localeId}) async {
-    final wav = _lastWav;
-    if (wav == null) return null;
-    // Código de idioma do Whisper: 'en_US' → 'en'.
-    return _transcribe(wav, language: localeId.split('_').first.toLowerCase());
+    // Idioma fixo no idioma da aula ('en_US' → 'en'): a identificação
+    // automática errava com o sotaque (traduzia a fala, ou dizia que era
+    // islandês). Um pedido em português chega traduzido para o idioma da aula,
+    // e a IA reconhece o pedido pelo sentido.
+    return _transcribe(wavFromPcm16(pcm, sampleRate: _sampleRate),
+        language: localeId.split('_').first.toLowerCase());
   }
 
   @override
   Future<void> cancel() async {
     _cancelled = true;
-    _lastWav = null;
     final stop = _stopSignal;
     if (stop != null && !stop.isCompleted) stop.complete();
   }
@@ -146,8 +135,7 @@ class WhisperSttService implements SttService {
     return audio.takeBytes();
   }
 
-  /// [language]: idioma fixo (ex.: 'en'). Sem ele, o Whisper identifica o
-  /// idioma sozinho (modo normal).
+  /// [language]: idioma fixo (ex.: 'en').
   Future<SttResult> _transcribe(Uint8List wav, {String? language}) async {
     // Uma nova tentativa em caso de sobrecarga ou falha temporária.
     for (var attempt = 1; attempt <= 2; attempt++) {

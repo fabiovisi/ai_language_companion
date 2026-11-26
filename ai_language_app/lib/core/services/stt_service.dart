@@ -29,15 +29,10 @@ abstract class SttService {
   /// Medidas da última escuta, para o debug (ex.: volume). Null se não houver.
   String? get debugInfo;
 
-  /// Ouve o aluno e devolve o texto. [localeId] é o idioma da aula
-  /// (ex.: 'en_US'); reconhecimentos multilíngues podem ignorá-lo.
+  /// Ouve o aluno e devolve o texto no idioma da aula [localeId]
+  /// (ex.: 'en_US'). Fala em outro idioma (ex.: um pedido de ajuda em
+  /// português) pode chegar traduzida para o idioma da aula.
   Future<SttResult> recognize({required String localeId});
-
-  /// Transcreve de novo a última fala, com o idioma fixo em [localeId].
-  /// Usado quando o reconhecimento identificou o idioma nativo e pode ter se
-  /// confundido com o sotaque. Devolve null se não for possível (sem áudio
-  /// guardado ou reconhecimento que não suporta).
-  Future<SttResult?> retranscribe({required String localeId});
 
   Future<void> cancel();
 }

@@ -12,4 +12,7 @@ abstract class TtsService {
   });
   Future<void> stop();
   bool get isSpeaking;
+
+  /// Voz em uso e última falha, para o debug. Null se não houver.
+  String? get debugInfo;
 }

@@ -8,6 +8,9 @@ class MockTtsService implements TtsService {
   bool get isSpeaking => _isSpeaking;
 
   @override
+  String? get debugInfo => null;
+
+  @override
   Future<void> speak(
     String text, {
     required SpeechRate rate,
