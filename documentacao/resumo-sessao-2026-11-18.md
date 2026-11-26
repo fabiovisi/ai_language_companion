@@ -137,7 +137,7 @@ Flutter, Kiro, Git, Chrome (em uso). AWS CLI 2.41 e SAM CLI (não usados mais; p
 ## Próximos passos
 Ver **`documentacao/plano-melhorias.md`**, com as etapas em ordem:
 0, 1a e 1b. Concluídas (reconhecimento com Whisper e pedidos de ajuda pela fala).
-2. Comandos de controle pela fala e parada imediata de voz e microfone; botões da correção saem da tela.
+2. Concluída e testada: comandos de voz (pausar, continuar, encerrar, repetir), parada imediata de voz e microfone, correção por voz sem botões.
 3. Tela do carro com os serviços reais.
 4. Memória por idioma, resumo da aula, revisão de erros e palavras, retomar de onde parou, "Apagar memória".
 5. Cenas de role-play.

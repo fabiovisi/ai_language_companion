@@ -141,7 +141,7 @@ instruções curtas, porque o limite gratuito do Groq é por tokens por dia.
   "Quer tentar novamente ou ouvir a instrução de novo?".
 - Com o Whisper, os comandos podem ser ditos no idioma nativo ("pausa", "encerra").
 
-**Implementada (aguardando teste).** Decisões do usuário: retomar dizendo "continuar"
+**Concluída e testada pelo usuário.** Decisões do usuário: retomar dizendo "continuar"
 (microfone ligado na pausa); botões Pausar/Retomar/Encerrar ficam; na correção, a
 próxima fala já é a nova tentativa.
 - `voice_commands.dart`: pausar, continuar, encerrar e repetir, em português e nos
@@ -251,5 +251,4 @@ Esforço: baixo.
 
 ## Ordem atual
 
-Etapas 1a e 1b concluídas. Etapa 2 implementada, **aguardando teste do usuário**.
-Depois: etapa 3 → demais etapas.
+Etapas 1a, 1b e 2 concluídas e testadas. Próxima: etapa 3 → demais etapas.
