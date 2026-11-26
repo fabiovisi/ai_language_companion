@@ -71,6 +71,17 @@ class MockConversationService implements ConversationService {
   int _correctionIndex = 0;
   int _confirmationIndex = 0;
 
+  // O mock não usa nem atualiza a memória.
+  @override
+  String? memory;
+
+  @override
+  Future<String?> updateMemory({
+    required String? previous,
+    required StudentProfile profile,
+  }) async =>
+      null;
+
   @override
   Future<AiTurn> startConversation({
     required StudentProfile profile,

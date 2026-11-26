@@ -6,10 +6,12 @@ import '../../domain/models/cefr_level_labels.dart';
 import '../../domain/models/language_locale.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
+import '../../domain/session/lesson_summary.dart';
 import '../../domain/session/session_state.dart';
 import '../../domain/session/session_state_manager.dart';
 import '../../core/debug/debug_settings.dart';
 import '../../core/permissions/permission_handler.dart';
+import '../../core/storage/memory_store.dart';
 import '../../core/services/device_stt_service.dart';
 import '../../core/services/whisper_stt_service.dart';
 import '../../domain/models/native_language.dart';
@@ -94,6 +96,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
   SessionState? _previousState;
   bool _pauseListening = false;
 
+  // Memória do aluno: carregada no início da aula e atualizada pela IA a
+  // cada [_memoryEvery] falas e no fim da aula.
+  static const _memoryEvery = 4;
+  String? _memory;
+  int _turnsSinceMemory = 0;
+  bool _memoryUpdating = false;
+  String? _memoryStatus; // só no debug
+
+  // Resumo da aula: o que aconteceu, para mostrar e falar no fim.
+  final _tracker = LessonTracker();
+  LessonSummary? _summary;
+  bool _ending = false; // encerramento em andamento (resumo e despedida)
+
   // Código do idioma da aula para STT e TTS (ex.: 'en_US').
   String get _localeId =>
       localeIdFor((_profile ?? _defaultProfile).targetLanguage);
@@ -140,6 +155,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (state == SessionState.paused && previous == SessionState.interval) {
       _skipInterval = true;
     }
+    // O tempo pausado não conta no resumo da aula.
+    if (state == SessionState.paused && previous != state) {
+      _tracker.pause(DateTime.now());
+    }
+    if (previous == SessionState.paused && state != SessionState.paused) {
+      _tracker.resume(DateTime.now());
+    }
     // Saiu da pausa (ex.: botão "Retomar"): para a escuta do "continuar" e o
     // aviso da pausa.
     if (previous == SessionState.paused && state != SessionState.paused) {
@@ -147,8 +169,55 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _stt.cancel();
     }
 
+    // Fim da aula: guarda o que ainda não entrou na memória.
+    if (state == SessionState.ended && previous != state) {
+      unawaited(_refreshMemory());
+    }
+
     if (state == SessionState.ready && !_cycleRunning) {
       _runCycle();
+    }
+  }
+
+  // — Memória do aluno —
+
+  String get _language => (_profile ?? _defaultProfile).targetLanguage;
+
+  // Conta as falas do aluno; a cada 4, atualiza a memória em segundo plano.
+  // Também conta a fala para o resumo da aula.
+  void _countTurnForMemory(SttResult heard) {
+    if (heard.transcript.isEmpty) return;
+    _tracker.addAnswer();
+    _turnsSinceMemory++;
+    if (_turnsSinceMemory >= _memoryEvery) unawaited(_refreshMemory());
+  }
+
+  Future<void> _refreshMemory() async {
+    if (_memoryUpdating || _turnsSinceMemory == 0) return;
+    _memoryUpdating = true;
+    _turnsSinceMemory = 0;
+    try {
+      final updated = await _conversation.updateMemory(
+          previous: _memory, profile: _profile ?? _defaultProfile);
+      if (updated == null) {
+        _memoryStatus = 'não atualizada';
+        return;
+      }
+      // Apagada nas Configurações enquanto a atualização rodava: não grava
+      // de novo a memória antiga.
+      if (_memory != null && await studentMemory.load(_language) == null) {
+        _memoryStatus = 'apagada pelo aluno';
+        _memory = null;
+        _conversation.memory = null;
+        return;
+      }
+      _memory = updated;
+      _conversation.memory = updated;
+      await studentMemory.save(_language, updated);
+      final items = updated.split('\n').where((l) => l.trim().isNotEmpty);
+      _memoryStatus = 'atualizada (${items.length} itens)';
+    } finally {
+      _memoryUpdating = false;
     }
   }
 
@@ -180,6 +249,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
       // (hora do dia, tema e nível), com reserva fixa no idioma da aula.
       if (_lastAiText.isEmpty) {
         _sessionManager.transition(SessionState.preparing);
+        // Memória do aluno neste idioma (aulas anteriores).
+        _memory = await studentMemory.load(_language);
+        _conversation.memory = _memory;
+        _tracker.start(DateTime.now()); // início da aula, para o resumo
+        if (_shouldStop()) break;
         final opening = await _conversation.startConversation(
           profile: _profile ?? _defaultProfile,
           config: _config ?? _defaultConfig,
@@ -248,6 +322,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         config: _config ?? _defaultConfig,
       );
       if (_shouldStop()) break;
+      _countTurnForMemory(sttResult);
 
       // 4. Erro: começa a correção (próxima volta do ciclo).
       if (aiTurn.hasCorrection) {
@@ -266,6 +341,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // — Correção por voz —
 
   void _startCorrection(AiTurn turn) {
+    _tracker.addCorrection(turn.correction?.correctForm ?? ''); // para o resumo
     _clearHelpCard();
     _correctionReaction = turn.correctionReaction!;
     _instructionPt = turn.instructionPt!;
@@ -335,6 +411,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _correctionStage = _CorrectionStage.instruction; // ao retomar
       return;
     }
+    _countTurnForMemory(result);
     _inCorrection = false;
     _setNextTurn(turn);
   }
@@ -361,23 +438,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _sessionManager.transition(SessionState.paused);
         return true;
       case VoiceCommand.end:
-        await _endByVoice();
+        await _endSession();
         return true;
       default:
         return false;
     }
   }
 
-  // Despede-se no idioma da aula e encerra.
-  Future<void> _endByVoice() async {
-    final language = (_profile ?? _defaultProfile).targetLanguage;
-    _lastAiText = goodbyePhrase(language);
+  // Encerra a aula (por voz ou pelo botão): mostra e fala o resumo, despede-se
+  // no idioma da aula e volta para a tela principal.
+  Future<void> _endSession() async {
+    if (_ending) return;
+    _ending = true;
     _clearHelpCard();
     _inCorrection = false;
-    _sessionManager.transition(SessionState.aiSpeaking);
-    await _tts.speak(_lastAiText, rate: _rate, localeId: _localeId);
-    if (mounted) _sessionManager.transition(SessionState.ended);
+    final summary = _tracker.summary(DateTime.now());
+    _summary = summary;
+    // Para a voz e o microfone na hora e guarda a memória (ver _onStateChanged).
+    _sessionManager.transition(SessionState.ended);
+
+    // Resumo falado no idioma nativo (Iniciante a Intermediário avançado). Em
+    // Avançado e Fluente, que são só no idioma da aula, fica só na tela.
+    if (!summary.isEmpty && _instructionLocaleId == nativeLanguage.localeId) {
+      await _speakMixed(summary.spokenText());
+    }
+    if (!mounted) return;
+    await _tts.speak(goodbyePhrase(_language), rate: _rate, localeId: _localeId);
+    if (!mounted) return;
+    await Future.delayed(_returnHomeDelay);
+    if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
   }
+
+  static const _returnHomeDelay = Duration(seconds: 2);
 
   // — Modo intervalado —
 
@@ -412,7 +504,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           case VoiceCommand.pause:
             _sessionManager.transition(SessionState.paused);
           case VoiceCommand.end:
-            await _endByVoice();
+            await _endSession();
           default:
             // Se a escuta falhar na hora (ex.: microfone indisponível),
             // espera um pouco em vez de repetir sem parar.
@@ -454,7 +546,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             _resumeSession();
             return;
           case VoiceCommand.end:
-            await _endByVoice();
+            await _endSession();
             return;
           default:
             break; // ignora outras falas
@@ -481,6 +573,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (turn.isHelp) {
       _helpSentence = _lastAiTargetText;
       _helpExplanation = turn.text;
+      _tracker.addWords(targetWords(turn.text)); // para o resumo da aula
     } else {
       _clearHelpCard();
     }
@@ -511,7 +604,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       return;
     }
     for (final segment in splitTargetLanguage(text)) {
-      if (_shouldStop()) return;
+      // No encerramento (resumo), a aula já está "encerrada", mas a fala segue.
+      if (!mounted || (_shouldStop() && !_ending)) return;
       await _tts.speak(
         segment.text,
         rate: rate,
@@ -604,6 +698,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       stt,
       if (levels != null) 'Volume: $levels',
       if (voice != null) 'Voz: $voice',
+      if (_memoryStatus != null) 'Memória: $_memoryStatus',
       ai,
     ].join('\n');
   }
@@ -761,10 +856,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
           onContinue: _finishInterval,
         ),
       SessionState.paused => _PausedView(onResume: _resumeSession),
-      SessionState.ended => const _StatusView(
-          icon: Icons.flag_outlined,
-          message: 'Sessão encerrada.',
-        ),
+      SessionState.ended => _summary != null && !_summary!.isEmpty
+          ? _SummaryView(summary: _summary!)
+          : const _StatusView(
+              icon: Icons.flag_outlined,
+              message: 'Sessão encerrada.',
+            ),
       SessionState.noConnectivity => const _StatusView(
           icon: Icons.wifi_off,
           message: 'Sem conexão. Verifique sua rede.',
@@ -805,9 +902,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
           icon: Icons.stop,
           label: 'Encerrar',
           color: Colors.red,
-          onTap: isActive || state == SessionState.paused
-              ? () => _sessionManager.transition(SessionState.ended)
-              : null,
+          // Mesmo caminho do comando de voz: resumo, despedida e volta à Home.
+          onTap: isActive || state == SessionState.paused ? _endSession : null,
         ),
       ],
     );
@@ -882,6 +978,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void dispose() {
     _stt.cancel(); // desliga o microfone ao sair da tela
     _tts.stop(); // interrompe a voz ao sair da tela
+    // Saiu sem encerrar (ex.: botão voltar): guarda o que falta na memória.
+    // Usa só o serviço e o armazenamento, não a tela.
+    unawaited(_refreshMemory());
     _sessionManager.removeListener(_onStateChanged);
     _sessionManager.dispose();
     _intervalRemaining.dispose();
@@ -1061,6 +1160,80 @@ class _HelpView extends StatelessWidget {
                   ),
                 ],
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Resumo da aula, mostrado no fim enquanto a IA fala o resumo e se despede.
+class _SummaryView extends StatelessWidget {
+  final LessonSummary summary;
+  const _SummaryView({required this.summary});
+
+  static const _accent = Color(0xFF176B65);
+
+  @override
+  Widget build(BuildContext context) {
+    const label =
+        TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _accent);
+
+    return Center(
+      child: SingleChildScrollView(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: _accent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _accent.withValues(alpha: 0.35)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.flag_outlined, color: _accent),
+                  SizedBox(width: 8),
+                  Text('Resumo da aula',
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Text('${summary.durationLabel} de prática · '
+                  '${summary.answers} '
+                  '${summary.answers == 1 ? 'fala' : 'falas'}'),
+              const SizedBox(height: 16),
+              const Text('PARA REVISAR', style: label),
+              const SizedBox(height: 6),
+              if (summary.corrections.isEmpty)
+                const Text('Nenhuma correção hoje.',
+                    style: TextStyle(color: Colors.grey))
+              else
+                for (final c in summary.corrections)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text('• $c', style: const TextStyle(fontSize: 16)),
+                  ),
+              if (summary.words.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Text('PALAVRAS NOVAS', style: label),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final w in summary.words) Chip(label: Text(w)),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 20),
+              const Text('Voltando para a tela inicial...',
+                  style: TextStyle(fontSize: 13, color: Colors.grey)),
             ],
           ),
         ),

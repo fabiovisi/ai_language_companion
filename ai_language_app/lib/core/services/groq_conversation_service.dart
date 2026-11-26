@@ -65,7 +65,10 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
     final language = profile.targetLanguage;
 
     final messages = [
-      {'role': 'system', 'content': conversationInstructions(profile, config)},
+      {
+        'role': 'system',
+        'content': conversationInstructions(profile, config, memory: memory),
+      },
       for (final e in _history.exchanges) ...[
         {'role': 'user', 'content': e.user},
         {'role': 'assistant', 'content': e.model},
@@ -101,6 +104,46 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
 
     lastError ??= 'nenhum modelo respondeu';
     return AiTurn(text: fallbackPhrase(language));
+  }
+
+  @override
+  String? memory;
+
+  @override
+  Future<String?> updateMemory({
+    required String? previous,
+    required StudentProfile profile,
+  }) async {
+    final exchanges = _history.exchanges;
+    if (exchanges.isEmpty) return null;
+
+    // Roda em segundo plano: não altera o debug da conversa.
+    final error = lastError, model = lastModel, duration = lastDuration;
+    try {
+      final messages = [
+        {
+          'role': 'system',
+          'content': memoryUpdateInstructions(profile.targetLanguage),
+        },
+        {'role': 'user', 'content': memoryUpdateMessage(previous, exchanges)},
+      ];
+      for (final m in _models) {
+        final raw = await _tryModel(m, messages);
+        if (raw == null) continue;
+        try {
+          return memoryFromJson(jsonDecode(raw) as Map<String, dynamic>);
+        } catch (_) {
+          continue;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      lastError = error;
+      lastModel = model;
+      lastDuration = duration;
+    }
   }
 
   /// Devolve o JSON da resposta, ou null se o modelo estiver indisponível

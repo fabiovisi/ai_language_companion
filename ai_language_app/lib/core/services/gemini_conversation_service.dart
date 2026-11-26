@@ -72,7 +72,8 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
     final watch = Stopwatch()..start();
     final String rawJson;
     try {
-      rawJson = await _generate(conversationInstructions(profile, config), contents);
+      rawJson = await _generate(
+          conversationInstructions(profile, config, memory: memory), contents);
       lastModel = _model;
     } catch (e) {
       lastError = e.toString();
@@ -94,8 +95,46 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
     return turn;
   }
 
+  @override
+  String? memory;
+
+  @override
+  Future<String?> updateMemory({
+    required String? previous,
+    required StudentProfile profile,
+  }) async {
+    final exchanges = _history.exchanges;
+    if (exchanges.isEmpty) return null;
+
+    // Roda em segundo plano: não altera o debug da conversa.
+    final error = lastError, model = lastModel, duration = lastDuration;
+    try {
+      final raw = await _generate(
+        memoryUpdateInstructions(profile.targetLanguage),
+        [_content('user', memoryUpdateMessage(previous, exchanges))],
+        schema: _memorySchema,
+      );
+      return memoryFromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    } finally {
+      lastError = error;
+      lastModel = model;
+      lastDuration = duration;
+    }
+  }
+
+  static const _memorySchema = {
+    'type': 'OBJECT',
+    'properties': {
+      'memory': {'type': 'STRING'},
+    },
+    'required': ['memory'],
+  };
+
   Future<String> _generate(
-      String instructions, List<Map<String, dynamic>> contents) async {
+      String instructions, List<Map<String, dynamic>> contents,
+      {Map<String, Object> schema = _responseSchema}) async {
     final body = jsonEncode({
       'systemInstruction': {
         'parts': [
@@ -107,7 +146,7 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
         'temperature': 0.7,
         'maxOutputTokens': 1024,
         'responseMimeType': 'application/json',
-        'responseSchema': _responseSchema,
+        'responseSchema': schema,
       },
     });
 

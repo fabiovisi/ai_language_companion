@@ -20,7 +20,18 @@ const _bracesRule =
     'for them). Example: A palavra {like} significa "gostar".';
 
 /// Instruções da aula enviadas à IA a cada turno.
-String conversationInstructions(StudentProfile profile, SessionConfig config) {
+///
+/// [memory]: o que o app lembra do aluno de aulas anteriores (ver
+/// memoryUpdateInstructions). Null ou vazio: sem memória.
+String conversationInstructions(StudentProfile profile, SessionConfig config,
+    {String? memory}) {
+  final memoryBlock = memory == null || memory.trim().isEmpty
+      ? ''
+      : '''
+
+What you remember about the student from previous lessons (written in Portuguese). Use it naturally to personalize the conversation, to ask about things the student told you before and to practice their recurring mistakes. Never read it aloud, list it or mention that you have notes:
+${memory.trim()}
+''';
   final language = profile.targetLanguage;
   final level = profile.cefrLevel.name.toUpperCase();
   final topic = config.topic ?? 'free conversation (student chooses)';
@@ -56,7 +67,7 @@ Example of an answer to a help request (the student asked about your question "D
 
   return '''
 You are a friendly conversation partner helping a Brazilian student practice a foreign language.
-Target language: $language. Student level: CEFR $level. Topic: $topic.
+Target language: $language. Student level: CEFR $level. Topic: $topic.$memoryBlock
 
 The conversation is spoken only (voice, possibly while driving):
 - Speak in the target language, with short sentences.
@@ -326,6 +337,49 @@ String fallbackPhrase(String language) => switch (language) {
       'Italiano' => 'Scusa, ho avuto un problema di connessione. Puoi ripetere?',
       _ => 'Sorry, I had a connection problem. Could you say that again?',
     };
+
+// — Memória do aluno —
+
+/// Tamanho máximo guardado (a memória vai nas instruções de cada turno).
+const _maxMemoryLength = 800;
+
+/// Instruções para atualizar a memória do aluno a partir da conversa recente.
+String memoryUpdateInstructions(String language) => '''
+You keep a short memory about a student of $language, used to personalize future lessons.
+Merge the previous memory with what the student revealed in the recent conversation.
+Keep only useful, lasting information:
+- personal facts the student shared (job, family, hobbies, places, plans, preferences);
+- topics the student enjoyed;
+- recurring language mistakes, with the correct form (for example: Erra o passado de "go": usar "went").
+Drop small talk and one-off details. Never invent facts. If nothing new was revealed, return the previous memory unchanged.
+Write in ${nativeLanguage.promptName}, one fact per line starting with "- ", at most 8 lines and 600 characters.
+Answer only with a JSON object: {"memory": "..."}
+''';
+
+/// Mensagem com a memória anterior e as últimas trocas da conversa.
+String memoryUpdateMessage(
+    String? previous, List<({String user, String model})> exchanges) {
+  final b = StringBuffer()
+    ..writeln('Previous memory:')
+    ..writeln(previous == null || previous.trim().isEmpty ? '(empty)' : previous)
+    ..writeln()
+    ..writeln('Recent conversation:');
+  for (final e in exchanges) {
+    b
+      ..writeln('Student: ${e.user}')
+      ..writeln('Tutor (JSON): ${e.model}');
+  }
+  return b.toString();
+}
+
+/// Lê a memória atualizada. Null se vier vazia ou fora do formato.
+String? memoryFromJson(Map<String, dynamic> data) {
+  final memory = (data['memory'] as String? ?? '').trim();
+  if (memory.isEmpty) return null;
+  return memory.length > _maxMemoryLength
+      ? memory.substring(0, _maxMemoryLength)
+      : memory;
+}
 
 /// Histórico curto da conversa: últimas trocas (fala do aluno + resposta da IA).
 class ConversationHistory {

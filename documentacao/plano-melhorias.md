@@ -281,7 +281,19 @@ para o carro fica para depois. Ordem:
    "continuar"/"pausa"/"encerrar" (decisão do usuário), botão "Continuar agora". Na
    saudação e na ajuda, sempre 2 s. Pausa no meio do intervalo: ao retomar, a pergunta
    vem sem nova contagem.
-2. Memória e resumo da aula (etapa 4). ← **próximo**
+2. Memória e resumo da aula (etapa 4), em três partes: ← **em andamento**
+   - ~~Memória~~ — **feito.** Uma por idioma (`core/storage/memory_store.dart`), resumo
+     curto em português (fatos pessoais, interesses, erros recorrentes; até 8 linhas).
+     Atualizada pela IA a cada 4 falas e no fim da aula (encerrar ou voltar), em
+     segundo plano; vai nas instruções de cada turno, sem ser recitada. Configurações:
+     seção "Memória" (mostra o conteúdo, avisa que vai para a IA) e "Apagar memória";
+     se apagada durante uma atualização, a memória antiga não é gravada de novo.
+   - ~~Resumo da aula~~ — **feito.** `domain/session/lesson_summary.dart`: tempo sem as
+     pausas, número de falas, até 3 correções e 5 palavras explicadas. No fim (voz ou
+     botão Encerrar): cartão na tela, resumo falado em português (só Iniciante a
+     Intermediário avançado; em Avançado e Fluente fica só na tela), despedida no
+     idioma da aula e **volta à tela principal** após 2 s (pedido do usuário).
+   - Retomar o assunto da aula anterior na saudação. ← **próximo**
 3. Teste no tablet Android (voz, escuta e Whisper no aparelho).
 4. Cenas de role-play (etapa 5).
 5. Personalização (etapa 7) e hábito (etapa 8).

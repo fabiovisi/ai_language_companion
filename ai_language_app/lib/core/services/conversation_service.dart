@@ -47,6 +47,18 @@ abstract class ConversationService {
   // Regra para distribuição: chaves de API ficam no backend (PR-04).
   // Fase atual (uso pessoal): a chave do Gemini vem via --dart-define.
 
+  /// O que o app lembra do aluno de aulas anteriores, usado nas instruções
+  /// da IA. Null: sem memória.
+  String? get memory;
+  set memory(String? value);
+
+  /// Atualiza a memória com as últimas trocas da conversa. Devolve a nova
+  /// memória, ou null se não for possível (sem conversa, falha ou mock).
+  Future<String?> updateMemory({
+    required String? previous,
+    required StudentProfile profile,
+  });
+
   /// Abertura da conversa: saudação (text) e primeira pergunta (followUp),
   /// no idioma, tema e nível da aula.
   Future<AiTurn> startConversation({

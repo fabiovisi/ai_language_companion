@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/drive_mode/drive_mode_provider.dart';
+import '../../core/storage/memory_store.dart';
 import '../../core/storage/settings_controller.dart';
 import '../../domain/models/app_settings.dart';
 import '../../domain/models/cefr_level_labels.dart';
@@ -9,6 +10,104 @@ import '../../domain/models/language_locale.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../common/option_widgets.dart';
+
+/// O que o app lembra sobre o aluno no idioma, e o botão para apagar.
+class _MemorySection extends StatefulWidget {
+  final String language;
+  const _MemorySection({super.key, required this.language});
+
+  @override
+  State<_MemorySection> createState() => _MemorySectionState();
+}
+
+class _MemorySectionState extends State<_MemorySection> {
+  String? _memory;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    studentMemory.load(widget.language).then((memory) {
+      if (mounted) {
+        setState(() {
+          _memory = memory;
+          _loaded = true;
+        });
+      }
+    });
+  }
+
+  Future<void> _confirmClear() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Apagar memória?'),
+        content: Text(
+            'O app vai esquecer o que sabe sobre você nas aulas de '
+            '${widget.language}. Isso não pode ser desfeito.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Apagar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await studentMemory.clear(widget.language);
+    if (mounted) setState(() => _memory = null); // atualiza na hora
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final memory = _memory;
+    final empty = memory == null || memory.trim().isEmpty;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('O que o app lembra sobre você (${widget.language})',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(
+              !_loaded
+                  ? 'Carregando...'
+                  : empty
+                      ? 'Nada guardado ainda. A memória é criada durante as '
+                          'aulas.'
+                      : memory,
+              style: TextStyle(
+                  color: empty ? Colors.grey : null,
+                  fontStyle: empty ? FontStyle.italic : null),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Fica no aparelho e é enviada à IA a cada aula, para '
+              'personalizar a conversa.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            if (!empty)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Apagar memória'),
+                  onPressed: _confirmClear,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 /// Uma opção de modo: contínuo, ou intervalado com o tempo em segundos.
 typedef _Pace = ({SessionMode mode, int seconds});
@@ -116,6 +215,10 @@ class SettingsScreen extends StatelessWidget {
                     appSettings.update((c) => c.copyWith(speechRate: r)),
               ),
             ),
+            const SizedBox(height: 8),
+            const SectionLabel('Memória'),
+            _MemorySection(
+                key: ValueKey(s.targetLanguage), language: s.targetLanguage),
             const SizedBox(height: 8),
             const SectionLabel('Desenvolvimento'),
             SwitchListTile(
