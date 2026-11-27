@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ai_language_app/core/services/conversation_prompt.dart';
+import 'package:ai_language_app/core/services/conversation_service.dart';
 import 'package:ai_language_app/domain/models/session_config.dart';
 import 'package:ai_language_app/domain/models/student_profile.dart';
 
@@ -77,6 +78,12 @@ void main() {
     // Pedidos de ajuda não têm marcador: a IA os reconhece pelo sentido.
     expect(markUtterance('What does commute mean?', isRetry: false),
         'What does commute mean?');
+    // "Não entendi essa frase" chega traduzido; o app avisa a IA.
+    expect(markUtterance("I don't understand this phrase.", isRetry: false),
+        "[NOT UNDERSTOOD] I don't understand this phrase.");
+    expect(markUtterance("I didn't understand.", isRetry: true),
+        "[RETRY] [NOT UNDERSTOOD] I didn't understand.");
+    expect(markUtterance("I don't know.", isRetry: false), "I don't know.");
   });
 
   test('instruções explicam o pedido de ajuda no idioma nativo', () {
@@ -97,6 +104,47 @@ void main() {
     expect(text, isNot(contains('[HELP')));
     expect(text, contains('Brazilian Portuguese'));
     expect(text, contains('help, slower'));
+  });
+
+  test('pedido para encerrar ou pausar reconhecido pela IA', () {
+    final end = turnFromJson(
+        {'hasError': false, 'command': 'end', 'feedback': 'Goodbye!'},
+        'I want to stop now', 'Inglês');
+    expect(end.command, LessonCommand.end);
+    expect(end.text, isEmpty); // a despedida é do app
+
+    final pause = turnFromJson(
+        {'hasError': false, 'command': 'pause'}, 'Hold on a second', 'Inglês');
+    expect(pause.command, LessonCommand.pause);
+
+    final normal = turnFromJson(
+        {'hasError': false, 'command': '', 'feedback': 'Nice!', 'question': 'Why?'},
+        'I stop at the gym after work', 'Inglês');
+    expect(normal.command, isNull);
+  });
+
+  test('instruções: explicação em português e comandos da aula', () {
+    final text = conversationInstructions(
+      const StudentProfile(
+        targetLanguage: 'Inglês',
+        cefrLevel: CefrLevel.a2,
+        lastSessionConfig: SessionConfig(
+            mode: SessionMode.continuous, speechRate: SpeechRate.normal),
+      ),
+      const SessionConfig(
+          mode: SessionMode.continuous, speechRate: SpeechRate.normal),
+    );
+
+    expect(text, contains('Even the explanation itself'));
+    expect(text, contains('Com períodos do dia, use {in} e não {at}'));
+    expect(text, contains('command="end"'));
+    expect(text, contains('command, hasError'));
+  });
+
+  test('instrução reescrita: lida da resposta', () {
+    expect(rewrittenInstructionFromJson({'instruction': ' Use {in}. '}),
+        'Use {in}.');
+    expect(rewrittenInstructionFromJson({}), isNull);
   });
 
   test('resposta vazia: frase de reserva no idioma da aula', () {

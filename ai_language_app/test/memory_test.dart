@@ -84,11 +84,68 @@ void main() {
     });
 
     test('memória atualizada: lida e limitada em tamanho', () {
-      expect(memoryFromJson({'memory': ' - Gosta de surfar '}),
-          '- Gosta de surfar');
+      final r = memoryFromJson({
+        'memory': ' - Gosta de surfar ',
+        'lessonNote': ' Contou que vai a Lisboa. ',
+      });
+      expect(r?.memory, '- Gosta de surfar');
+      expect(r?.lessonNote, 'Contou que vai a Lisboa.');
       expect(memoryFromJson({'memory': ''}), isNull);
       expect(memoryFromJson({}), isNull);
-      expect(memoryFromJson({'memory': 'x' * 2000})!.length, 800);
+      expect(memoryFromJson({'memory': 'x' * 2000})!.memory.length, 800);
+      expect(memoryFromJson({'memory': 'a', 'lessonNote': 'y' * 900})!
+          .lessonNote!
+          .length, 300);
+      expect(memoryFromJson({'memory': 'a'})!.lessonNote, isNull);
+    });
+
+    test('pedido de atualização leva a nota desta aula', () {
+      expect(memoryUpdateMessage(null, const [], lessonNote: 'Falou de surfe.'),
+          contains('Falou de surfe.'));
+    });
+  });
+
+  group('retomar a aula anterior', () {
+    final now = DateTime(2026, 11, 27, 9);
+
+    test('texto conforme os dias', () {
+      expect(previousLessonText('Falou de Lisboa.', DateTime(2026, 11, 27, 7),
+              now: now),
+          'earlier today: Falou de Lisboa.');
+      expect(previousLessonText('X', DateTime(2026, 11, 26, 22), now: now),
+          'yesterday: X');
+      expect(previousLessonText('X', DateTime(2026, 11, 20), now: now),
+          '7 days ago: X');
+    });
+
+    test('assunto antigo, vazio ou sem data: não retoma', () {
+      expect(previousLessonText('X', DateTime(2026, 11, 1), now: now), isNull);
+      expect(previousLessonText('', DateTime(2026, 11, 26), now: now), isNull);
+      expect(previousLessonText('X', null, now: now), isNull);
+    });
+
+    test('abertura leva a aula anterior quando houver', () {
+      const config = SessionConfig(
+          mode: SessionMode.continuous, speechRate: SpeechRate.normal);
+      expect(openingMessage(config, previousLesson: 'yesterday: Falou de Lisboa.'),
+          contains('Previous lesson (yesterday: Falou de Lisboa.)'));
+      expect(openingMessage(config), isNot(contains('Previous lesson')));
+    });
+
+    test('nota da última aula: guarda, lê e apaga junto com a memória',
+        () async {
+      final store = MemoryStore(_MemoryKv());
+      await store.save('Inglês', '- Gosta de surfar');
+      await store.saveLastLesson('Inglês', 'Falou de Lisboa.',
+          date: DateTime(2026, 11, 26));
+
+      final last = await store.loadLastLesson('Inglês');
+      expect(last?.note, 'Falou de Lisboa.');
+      expect(last?.date, DateTime(2026, 11, 26));
+      expect(await store.loadLastLesson('Espanhol'), isNull);
+
+      await store.clear('Inglês');
+      expect(await store.loadLastLesson('Inglês'), isNull);
     });
   });
 }

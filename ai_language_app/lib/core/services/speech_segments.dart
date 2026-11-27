@@ -36,6 +36,41 @@ List<SpeechSegment> splitTargetLanguage(String text) {
   return segments;
 }
 
+// Palavras muito comuns em inglês e quase inexistentes em português: servem
+// para notar uma explicação escrita em inglês fora das chaves.
+const _englishMarkers = {
+  'the', 'is', 'are', 'was', 'were', 'you', 'your', 'instead', 'of', 'for',
+  'with', 'should', 'when', 'this', 'that', 'it', 'and', 'to', 'say', 'try',
+  'means', 'mean', 'word', 'verb', 'tense', 'past', 'present', 'correct',
+  'wrong', 'times', 'day', 'not', 'because', 'like', 'in', 'at', 'on',
+  // (nada de "use" e "do", que também são palavras em português)
+  'i', 'my', 'we', 'they', 'he', 'she', 'have', 'has', 'does',
+  'go', 'went', 'usually', 'afternoon', 'morning', 'evening', 'sentence',
+  'phrase', 'which', 'what', 'here', 'there', 'after', 'before',
+};
+
+
+/// True quando o texto FORA das chaves parece estar em inglês (a IA escreveu
+/// a explicação em inglês, e não no idioma nativo). As palavras entre chaves
+/// são do idioma da aula e não contam.
+bool looksEnglishOutsideBraces(String text) {
+  final outside = text.replaceAll(_braces, ' ').toLowerCase();
+  final words = RegExp(r"[\p{L}']+", unicode: true)
+      .allMatches(outside)
+      .map((m) => m.group(0)!)
+      .toList();
+  // Basta um trecho em inglês: a instrução pode vir misturada, com partes em
+  // português (ex.: 'Use "in" instead of "at" for times of day. Diga: ...').
+  // As palavras da lista não existem em português, então 2 já indicam inglês.
+  final english = words.where(_englishMarkers.contains).length;
+  return english >= 2;
+}
+
+/// Instrução de correção simples, em português, usada quando a da IA veio em
+/// inglês e não pôde ser reescrita.
+String fallbackInstruction(String correctForm) =>
+    'O certo é assim. Tente dizer: {$correctForm}';
+
 /// Texto para exibir na tela: as chaves viram aspas.
 /// Ex.: 'A palavra {like} significa "gostar".' →
 /// 'A palavra "like" significa "gostar".'

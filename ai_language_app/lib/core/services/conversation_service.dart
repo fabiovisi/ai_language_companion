@@ -2,6 +2,10 @@ import '../../domain/models/student_profile.dart';
 import '../../domain/models/session_config.dart';
 import '../../domain/models/correction.dart';
 
+/// Resultado de uma atualização da memória.
+/// [lessonNote]: o assunto desta aula, para retomar na próxima.
+typedef MemoryUpdate = ({String memory, String? lessonNote});
+
 class AiTurn {
   final String text;      // fala principal (retorno sobre o que o aluno disse)
   final String? followUp; // nova pergunta, falada após uma pausa
@@ -20,6 +24,10 @@ class AiTurn {
   /// velocidade mais lenta.
   final bool slower;
 
+  /// O aluno pediu para encerrar ou pausar a aula (em qualquer idioma ou
+  /// frase). Quem age é o app; [text] vem vazio.
+  final LessonCommand? command;
+
   const AiTurn({
     required this.text,
     this.followUp,
@@ -28,11 +36,15 @@ class AiTurn {
     this.instructionPt,
     this.help,
     this.slower = false,
+    this.command,
   });
 
   bool get hasCorrection => correction != null;
   bool get isHelp => help != null;
 }
+
+/// Comandos de controle da aula reconhecidos pela IA.
+enum LessonCommand { end, pause }
 
 /// Informações de debug que os serviços de IA reais expõem para a tela.
 abstract class LlmDebugInfo {
@@ -52,18 +64,26 @@ abstract class ConversationService {
   String? get memory;
   set memory(String? value);
 
-  /// Atualiza a memória com as últimas trocas da conversa. Devolve a nova
-  /// memória, ou null se não for possível (sem conversa, falha ou mock).
-  Future<String?> updateMemory({
+  /// Atualiza a memória com as últimas trocas da conversa. [lessonNote]: o
+  /// assunto desta aula até agora. Devolve a nova memória e a nova nota da
+  /// aula, ou null se não for possível (sem conversa, falha ou mock).
+  Future<MemoryUpdate?> updateMemory({
     required String? previous,
     required StudentProfile profile,
+    String? lessonNote,
   });
 
+  /// Reescreve no idioma nativo uma instrução de correção que veio em outro
+  /// idioma, mantendo as palavras entre chaves. Null se não for possível.
+  Future<String?> rewriteInstruction(String instruction);
+
   /// Abertura da conversa: saudação (text) e primeira pergunta (followUp),
-  /// no idioma, tema e nível da aula.
+  /// no idioma, tema e nível da aula. [previousLesson]: o assunto da aula
+  /// anterior, para retomar (ver previousLessonText).
   Future<AiTurn> startConversation({
     required StudentProfile profile,
     required SessionConfig config,
+    String? previousLesson,
   });
 
   /// [isRetryAfterCorrection]: o aluno está tentando de novo após uma correção.

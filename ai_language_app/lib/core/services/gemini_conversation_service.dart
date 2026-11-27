@@ -37,8 +37,10 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
   Future<AiTurn> startConversation({
     required StudentProfile profile,
     required SessionConfig config,
+    String? previousLesson,
   }) async {
-    final turn = await _turn(openingMessage(config), '', profile, config);
+    final turn = await _turn(
+        openingMessage(config, previousLesson: previousLesson), '', profile, config);
     // Sem resposta válida da IA: abertura fixa no idioma da aula.
     return lastError != null || turn.hasCorrection
         ? fallbackOpening(profile.targetLanguage)
@@ -96,12 +98,36 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
   }
 
   @override
+  Future<String?> rewriteInstruction(String instruction) async {
+    try {
+      final raw = await _generate(
+        instructionRewriteInstructions,
+        [_content('user', instruction)],
+        schema: _rewriteSchema,
+      );
+      return rewrittenInstructionFromJson(
+          jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static const _rewriteSchema = {
+    'type': 'OBJECT',
+    'properties': {
+      'instruction': {'type': 'STRING'},
+    },
+    'required': ['instruction'],
+  };
+
+  @override
   String? memory;
 
   @override
-  Future<String?> updateMemory({
+  Future<MemoryUpdate?> updateMemory({
     required String? previous,
     required StudentProfile profile,
+    String? lessonNote,
   }) async {
     final exchanges = _history.exchanges;
     if (exchanges.isEmpty) return null;
@@ -111,7 +137,7 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
     try {
       final raw = await _generate(
         memoryUpdateInstructions(profile.targetLanguage),
-        [_content('user', memoryUpdateMessage(previous, exchanges))],
+        [_content('user', memoryUpdateMessage(previous, exchanges, lessonNote: lessonNote))],
         schema: _memorySchema,
       );
       return memoryFromJson(jsonDecode(raw) as Map<String, dynamic>);
@@ -192,6 +218,7 @@ class GeminiConversationService implements ConversationService, LlmDebugInfo {
       'question': {'type': 'STRING'},
       'help': {'type': 'STRING'},
       'slower': {'type': 'BOOLEAN'},
+      'command': {'type': 'STRING'},
       'hasError': {'type': 'BOOLEAN'},
       'reaction': {'type': 'STRING'},
       'instruction': {'type': 'STRING'},

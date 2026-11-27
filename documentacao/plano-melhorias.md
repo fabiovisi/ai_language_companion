@@ -281,7 +281,7 @@ para o carro fica para depois. Ordem:
    "continuar"/"pausa"/"encerrar" (decisão do usuário), botão "Continuar agora". Na
    saudação e na ajuda, sempre 2 s. Pausa no meio do intervalo: ao retomar, a pergunta
    vem sem nova contagem.
-2. Memória e resumo da aula (etapa 4), em três partes: ← **em andamento**
+2. ~~Memória e resumo da aula (etapa 4)~~ — **feito**, em três partes:
    - ~~Memória~~ — **feito.** Uma por idioma (`core/storage/memory_store.dart`), resumo
      curto em português (fatos pessoais, interesses, erros recorrentes; até 8 linhas).
      Atualizada pela IA a cada 4 falas e no fim da aula (encerrar ou voltar), em
@@ -293,7 +293,16 @@ para o carro fica para depois. Ordem:
      botão Encerrar): cartão na tela, resumo falado em português (só Iniciante a
      Intermediário avançado; em Avançado e Fluente fica só na tela), despedida no
      idioma da aula e **volta à tela principal** após 2 s (pedido do usuário).
-   - Retomar o assunto da aula anterior na saudação. ← **próximo**
+   - ~~Retomar o assunto da aula anterior~~ — **feito.** A IA guarda uma nota da aula
+     junto com a memória; se a aula anterior foi há até 14 dias, a saudação retoma o
+     assunto.
+   - Correções feitas no caminho: comandos de voz ampliados (com as traduções
+     prováveis) e campo `command` da IA para "encerrar"/"pausar" ditos de outro jeito; o
+     balão "Você" mostra o comando em português. A instrução de correção (Iniciante a
+     Intermediário avançado) é reescrita em português quando vem com trechos em inglês
+     fora das chaves; se falhar, o app fala uma instrução padrão com a forma correta.
+     "Não entendi (essa frase)" é reconhecido pelo app como pedido de ajuda sobre a
+     última fala da IA, e não como frase a ser explicada.
 3. Teste no tablet Android (voz, escuta e Whisper no aparelho).
 4. Cenas de role-play (etapa 5).
 5. Personalização (etapa 7) e hábito (etapa 8).

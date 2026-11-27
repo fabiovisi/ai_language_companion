@@ -71,14 +71,19 @@ class MockConversationService implements ConversationService {
   int _correctionIndex = 0;
   int _confirmationIndex = 0;
 
+  // As instruções do mock já estão em português.
+  @override
+  Future<String?> rewriteInstruction(String instruction) async => null;
+
   // O mock não usa nem atualiza a memória.
   @override
   String? memory;
 
   @override
-  Future<String?> updateMemory({
+  Future<MemoryUpdate?> updateMemory({
     required String? previous,
     required StudentProfile profile,
+    String? lessonNote,
   }) async =>
       null;
 
@@ -86,6 +91,7 @@ class MockConversationService implements ConversationService {
   Future<AiTurn> startConversation({
     required StudentProfile profile,
     required SessionConfig config,
+    String? previousLesson, // o mock não retoma a aula anterior
   }) async =>
       fallbackOpening(profile.targetLanguage);
 

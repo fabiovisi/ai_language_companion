@@ -39,8 +39,10 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
   Future<AiTurn> startConversation({
     required StudentProfile profile,
     required SessionConfig config,
+    String? previousLesson,
   }) async {
-    final turn = await _turn(openingMessage(config), '', profile, config);
+    final turn = await _turn(
+        openingMessage(config, previousLesson: previousLesson), '', profile, config);
     // Sem resposta válida da IA: abertura fixa no idioma da aula.
     return lastError != null || turn.hasCorrection
         ? fallbackOpening(profile.targetLanguage)
@@ -107,12 +109,34 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
   }
 
   @override
+  Future<String?> rewriteInstruction(String instruction) async {
+    final messages = [
+      {'role': 'system', 'content': instructionRewriteInstructions},
+      {'role': 'user', 'content': instruction},
+    ];
+    try {
+      for (final m in _models) {
+        final raw = await _tryModel(m, messages);
+        if (raw == null) continue;
+        try {
+          return rewrittenInstructionFromJson(
+              jsonDecode(raw) as Map<String, dynamic>);
+        } catch (_) {
+          continue;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  @override
   String? memory;
 
   @override
-  Future<String?> updateMemory({
+  Future<MemoryUpdate?> updateMemory({
     required String? previous,
     required StudentProfile profile,
+    String? lessonNote,
   }) async {
     final exchanges = _history.exchanges;
     if (exchanges.isEmpty) return null;
@@ -125,7 +149,7 @@ class GroqConversationService implements ConversationService, LlmDebugInfo {
           'role': 'system',
           'content': memoryUpdateInstructions(profile.targetLanguage),
         },
-        {'role': 'user', 'content': memoryUpdateMessage(previous, exchanges)},
+        {'role': 'user', 'content': memoryUpdateMessage(previous, exchanges, lessonNote: lessonNote)},
       ];
       for (final m in _models) {
         final raw = await _tryModel(m, messages);

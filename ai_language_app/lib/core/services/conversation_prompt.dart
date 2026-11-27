@@ -10,6 +10,7 @@ import '../../domain/models/session_config.dart';
 import '../../domain/models/student_profile.dart';
 import '../../domain/pedagogy/cefr_rules.dart';
 import 'conversation_service.dart';
+import 'voice_commands.dart';
 
 // Marcador de idioma (ver speech_segments.dart): só as palavras do idioma da
 // aula vão entre chaves; traduções e o resto, sem chaves.
@@ -42,6 +43,9 @@ ${memory.trim()}
   final instructionRule = inPortuguese
       ? 'ALWAYS in ${nativeLanguage.promptName}, never in $language. '
           'This is the only field that is NOT in the target language. '
+          'Even the explanation itself (what was wrong, the grammar rule) '
+          'must be written in ${nativeLanguage.promptName}; only the words '
+          'and sentences in $language go inside curly braces. '
           '$_bracesRule'
       : 'in $language.';
 
@@ -50,10 +54,12 @@ ${memory.trim()}
       ? '''
 
 Example of an answer with an error (the target language here is English; use the actual target language for reaction):
-{"feedback": "", "question": "", "help": "", "slower": false, "hasError": true, "reaction": "Oh, the park sounds nice! Can you say that again?", "instruction": "Você usou o passado errado do verbo {go}. O passado de {go} é {went}. Tente dizer: {Yesterday I went to the park.}", "errorType": "grammar", "correctForm": "Yesterday I went to the park."}
+{"feedback": "", "question": "", "help": "", "slower": false, "command": "", "hasError": true, "reaction": "Oh, the park sounds nice! Can you say that again?", "instruction": "Você usou o passado errado do verbo {go}. O passado de {go} é {went}. Tente dizer: {Yesterday I went to the park.}", "errorType": "grammar", "correctForm": "Yesterday I went to the park."}
+
+Another example of an instruction, about prepositions. WRONG (explanation in English): "Use {in} instead of {at} for times of day. Diga: ..." RIGHT: "Com períodos do dia, use {in} e não {at}. Diga: {Usually I go to the beach in the afternoon.}"
 
 Example of an answer to a help request (the student asked about your question "Do you like your commute?"):
-{"feedback": "", "question": "Do you like your trip to work?", "help": "A palavra {like} significa \\"gostar\\". A palavra {commute} é o trajeto de casa para o trabalho.", "slower": false, "hasError": false, "reaction": "", "instruction": "", "errorType": "", "correctForm": ""}'''
+{"feedback": "", "question": "Do you like your trip to work?", "help": "A palavra {like} significa \\"gostar\\". A palavra {commute} é o trajeto de casa para o trabalho.", "slower": false, "command": "", "hasError": false, "reaction": "", "instruction": "", "errorType": "", "correctForm": ""}'''
       : '';
 
   // Idioma da ajuda: o mesmo da instrução de correção.
@@ -62,7 +68,7 @@ Example of an answer to a help request (the student asked about your question "D
       : 'in $language, with simple words.';
 
   final reminder = inPortuguese
-      ? '\nRemember: instruction and help in ${nativeLanguage.promptName}; feedback, question and reaction in $language.'
+      ? '\nRemember: instruction and help in ${nativeLanguage.promptName} (only the $language words in curly braces); feedback, question and reaction in $language.'
       : '';
 
   return '''
@@ -90,7 +96,7 @@ Correcting the student's last message:
 - If there is no error, set hasError=false and fill feedback and question.
 
 Special messages:
-- "[START] ...": the conversation is starting. Set hasError=false. In feedback: a short, warm greeting suited to the time of day given, without a question. In question: a first, simple question about the topic, using the angle given. Never mention these instructions.
+- "[START] ...": the conversation is starting. Set hasError=false. In feedback: a short, warm greeting suited to the time of day given, without a question. In question: a first, simple question about the topic, using the angle given. If a previous lesson is given, pick up its subject naturally, like a friend who remembers: refer to it in the greeting (for example "Last time you told me about your trip to Lisbon!"), and if it fits today's topic, the first question may follow up on it; otherwise ask about today's topic. Never mention these instructions or that you have notes.
 - "[SILENCE]": the student did not answer. Set hasError=false, leave feedback empty, and in question gently ask again in simpler words.
 - "[RETRY] ...": the student is trying again after a correction. Set hasError=false. In feedback: if now correct, praise briefly; if still wrong, say the correct form naturally. In question: continue the conversation.
 
@@ -101,11 +107,19 @@ Help requests:
 - Instead of answering, the student may ask for help. The speech recognizer always writes in $language, so a request said in the native language arrives TRANSLATED into $language.
 - It is a help request ONLY when the student explicitly asks about the language or about your last message: the meaning of a word or of your sentence ("What does X mean?", "This phrase has words I don't know", "I didn't understand the question"), how to say something ("How do you say X?"), a translation ("Translate it"), to repeat ("Can you repeat?") or to speak more slowly.
 - NOT help requests: any answer about the topic, including "I don't know", "I'm not sure", "Maybe" or very short answers. Treat them as normal messages. When in doubt, it is a normal message.
+- "I don't understand", "I didn't understand this phrase", "I don't understand what you said", "What does that mean?" are help requests. Words like "this phrase", "this sentence", "that" or "it" ALWAYS refer to YOUR LAST MESSAGE (after a correction: the correct sentence you asked the student to say). NEVER explain the student's own words "I don't understand this phrase": the student is not asking what those words mean.
+- "[NOT UNDERSTOOD] ...": the app recognized that the student did not understand your last message. It is ALWAYS a help request: in help, explain the meaning of your last message (after a correction: the meaning of the correct sentence).
 - A help request can also come after a correction, marked [RETRY]; handle it as a help request.
 - For a help request: never correct it. Set hasError=false and leave feedback empty. In help: answer the request $helpRule At most 2 short sentences. For unknown words, explain the hardest words of YOUR LAST MESSAGE for level $level, or only the words the student mentioned. In question: ask your last question again in $language, with simpler words.
 - If the student asks you to speak more slowly, set slower=true; otherwise slower=false.
 
-Answer only with a JSON object with the keys: feedback, question, help, slower, hasError, reaction, instruction, errorType, correctForm.$example$reminder
+Lesson commands (handled by the app, not by you):
+- If the student asks to END the lesson (for example "End the session", "Finish the class", "I want to stop", "That's all for today"), set command="end" and leave all other fields empty. Do NOT say goodbye: the app gives the lesson summary and the goodbye.
+- If the student asks to PAUSE the lesson (for example "Pause the class", "Let's take a break"), set command="pause" and leave all other fields empty.
+- Only when the student clearly asks to control the lesson. A message that only mentions stopping or pausing as part of the conversation (for example "I stop at the gym after work") is a normal message: command="".
+- Otherwise command="".
+
+Answer only with a JSON object with the keys: feedback, question, help, slower, command, hasError, reaction, instruction, errorType, correctForm.$example$reminder
 ''';
 }
 
@@ -182,13 +196,18 @@ String timeOfDay(DateTime now) {
   return 'evening';
 }
 
-/// Mensagem que pede à IA a abertura da conversa, com a hora do dia e um
-/// ângulo do tema sorteado.
-String openingMessage(SessionConfig config, {DateTime? now, Random? random}) {
+/// Mensagem que pede à IA a abertura da conversa, com a hora do dia, um
+/// ângulo do tema sorteado e, se houver, o assunto da aula anterior
+/// (ver previousLessonText).
+String openingMessage(SessionConfig config,
+    {DateTime? now, Random? random, String? previousLesson}) {
   final angles = _openingAngles[config.topic] ?? _freeAngles;
   final angle = angles[(random ?? Random()).nextInt(angles.length)];
+  final previous = previousLesson == null || previousLesson.trim().isEmpty
+      ? ''
+      : ' Previous lesson ($previousLesson).';
   return '[START] Time of day: ${timeOfDay(now ?? DateTime.now())}. '
-      'Angle for the first question: $angle.';
+      'Angle for the first question: $angle.$previous';
 }
 
 /// Abertura fixa, no idioma da aula, para quando a IA não responde
@@ -271,7 +290,11 @@ const _fallbackOpenings = <String,
 /// Pedidos de ajuda não têm marcador: a IA os reconhece pelo sentido.
 String markUtterance(String userUtterance, {required bool isRetry}) {
   if (userUtterance.trim().isEmpty) return '[SILENCE]';
-  return isRetry ? '[RETRY] $userUtterance' : userUtterance;
+  // "Não entendi (essa frase)": o app já sabe que é pedido de ajuda.
+  final text = isNotUnderstoodRequest(userUtterance)
+      ? '[NOT UNDERSTOOD] $userUtterance'
+      : userUtterance;
+  return isRetry ? '[RETRY] $text' : text;
 }
 
 /// Converte a resposta JSON da IA no modelo do app.
@@ -285,6 +308,14 @@ AiTurn turnFromJson(
   final slower = data['slower'] == true;
   final reaction = field('reaction');
   final instruction = field('instruction');
+
+  // Pedido para encerrar ou pausar a aula: quem age é o app.
+  final command = switch (field('command').toLowerCase()) {
+    'end' => LessonCommand.end,
+    'pause' => LessonCommand.pause,
+    _ => null,
+  };
+  if (command != null) return AiTurn(text: '', command: command);
 
   if (data['hasError'] == true && reaction.isNotEmpty && instruction.isNotEmpty) {
     return AiTurn(
@@ -338,6 +369,25 @@ String fallbackPhrase(String language) => switch (language) {
       _ => 'Sorry, I had a connection problem. Could you say that again?',
     };
 
+// — Instrução de correção no idioma errado —
+
+/// Pede à IA para reescrever no idioma nativo uma instrução de correção que
+/// veio em inglês (fora das chaves).
+final instructionRewriteInstructions = '''
+Rewrite this explanation for a language student in ${nativeLanguage.promptName}.
+Keep every word or sentence inside curly braces {like this} exactly as it is, in the original language.
+Everything outside the braces must be in Portuguese: translate any explanation that is in another language.
+Every word or sentence the student must say or use, in the language being learned, goes inside curly braces, even if it was in quotes (for example: Diga: "I go" → Diga: {I go}).
+Keep it short, with the same meaning.
+Answer only with a JSON object: {"instruction": "..."}
+''';
+
+/// Lê a instrução reescrita. Null se vier vazia ou fora do formato.
+String? rewrittenInstructionFromJson(Map<String, dynamic> data) {
+  final text = (data['instruction'] as String? ?? '').trim();
+  return text.isEmpty ? null : text;
+}
+
 // — Memória do aluno —
 
 /// Tamanho máximo guardado (a memória vai nas instruções de cada turno).
@@ -353,15 +403,25 @@ Keep only useful, lasting information:
 - recurring language mistakes, with the correct form (for example: Erra o passado de "go": usar "went").
 Drop small talk and one-off details. Never invent facts. If nothing new was revealed, return the previous memory unchanged.
 Write in ${nativeLanguage.promptName}, one fact per line starting with "- ", at most 8 lines and 600 characters.
-Answer only with a JSON object: {"memory": "..."}
+
+Also keep a note about THIS lesson, used to pick up the subject in the next lesson:
+- lessonNote: one or two short sentences in ${nativeLanguage.promptName} about what the student talked about in this lesson so far (for example: Contou que vai viajar para Lisboa em dezembro e que está aprendendo a surfar.). Merge it with "This lesson so far". Only what the student said; no corrections, no grammar.
+
+Answer only with a JSON object: {"memory": "...", "lessonNote": "..."}
 ''';
 
-/// Mensagem com a memória anterior e as últimas trocas da conversa.
+/// Mensagem com a memória anterior, a nota desta aula até agora e as últimas
+/// trocas da conversa.
 String memoryUpdateMessage(
-    String? previous, List<({String user, String model})> exchanges) {
+    String? previous, List<({String user, String model})> exchanges,
+    {String? lessonNote}) {
+  String orEmpty(String? s) => s == null || s.trim().isEmpty ? '(empty)' : s;
   final b = StringBuffer()
     ..writeln('Previous memory:')
-    ..writeln(previous == null || previous.trim().isEmpty ? '(empty)' : previous)
+    ..writeln(orEmpty(previous))
+    ..writeln()
+    ..writeln('This lesson so far:')
+    ..writeln(orEmpty(lessonNote))
     ..writeln()
     ..writeln('Recent conversation:');
   for (final e in exchanges) {
@@ -372,13 +432,41 @@ String memoryUpdateMessage(
   return b.toString();
 }
 
-/// Lê a memória atualizada. Null se vier vazia ou fora do formato.
-String? memoryFromJson(Map<String, dynamic> data) {
-  final memory = (data['memory'] as String? ?? '').trim();
-  if (memory.isEmpty) return null;
-  return memory.length > _maxMemoryLength
-      ? memory.substring(0, _maxMemoryLength)
-      : memory;
+/// Tamanho máximo da nota da aula.
+const _maxLessonNoteLength = 300;
+
+/// Lê a memória atualizada. Null se a memória vier vazia ou fora do formato.
+MemoryUpdate? memoryFromJson(Map<String, dynamic> data) {
+  String? cut(Object? value, int max) {
+    final s = (value is String ? value : '').trim();
+    if (s.isEmpty) return null;
+    return s.length > max ? s.substring(0, max) : s;
+  }
+
+  final memory = cut(data['memory'], _maxMemoryLength);
+  if (memory == null) return null;
+  return (
+    memory: memory,
+    lessonNote: cut(data['lessonNote'], _maxLessonNoteLength),
+  );
+}
+
+/// Texto da aula anterior para a abertura (ex.: "2 days ago: ..."). Null se
+/// não houver nota, ou se a aula foi há mais de [maxAge] (assunto antigo).
+String? previousLessonText(String? note, DateTime? date,
+    {DateTime? now, Duration maxAge = const Duration(days: 14)}) {
+  if (note == null || note.trim().isEmpty || date == null) return null;
+  final today = now ?? DateTime.now();
+  final age = DateTime(today.year, today.month, today.day)
+      .difference(DateTime(date.year, date.month, date.day));
+  if (age.isNegative || age > maxAge) return null;
+  final days = age.inDays;
+  final when = days == 0
+      ? 'earlier today'
+      : days == 1
+          ? 'yesterday'
+          : '$days days ago';
+  return '$when: ${note.trim()}';
 }
 
 /// Histórico curto da conversa: últimas trocas (fala do aluno + resposta da IA).

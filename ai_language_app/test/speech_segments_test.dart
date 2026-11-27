@@ -30,6 +30,55 @@ void main() {
         [false, true, false, true, false, true]);
   });
 
+  test('instrução em inglês fora das chaves é detectada', () {
+    // O caso relatado pelo usuário.
+    expect(
+        looksEnglishOutsideBraces('Use {In} instead of {at} for times of day. '
+            'Diga: {Usually I go to the beach in the afternoon}'),
+        isTrue);
+    expect(
+        looksEnglishOutsideBraces(
+            'The past of {go} is {went}. Try to say it again.'),
+        isTrue);
+  });
+
+  test('instrução misturada (português e inglês) é detectada', () {
+    // O caso relatado: explicação em inglês e "Diga:" em português, com a
+    // frase entre aspas em vez de chaves.
+    expect(
+        looksEnglishOutsideBraces('Use "In" instead of "at" for times of day. '
+            'Diga: "Usually I go to the beach in the afternoon"'),
+        isTrue);
+    expect(
+        looksEnglishOutsideBraces(
+            'Você errou a preposição. Use {in} instead of {at}. Tente de novo.'),
+        isTrue);
+    expect(
+        looksEnglishOutsideBraces(
+            'O passado de {go} é {went}. Diga: "Yesterday I went to the park."'),
+        isTrue);
+  });
+  test('instrução padrão fica em português', () {
+    final text = fallbackInstruction('I went to the park.');
+    expect(text, contains('{I went to the park.}'));
+    expect(looksEnglishOutsideBraces(text), isFalse);
+  });
+  test('instrução em português não é detectada como inglês', () {
+    expect(
+        looksEnglishOutsideBraces(
+            'Use {went}, o passado do verbo {go}. A palavra "gostar" é {like}.'),
+        isFalse);
+    expect(
+        looksEnglishOutsideBraces('Com períodos do dia, use {in} e não {at}. '
+            'Diga: {Usually I go to the beach in the afternoon.}'),
+        isFalse);
+    expect(
+        looksEnglishOutsideBraces(
+            'Você usou o passado errado do verbo {go}. Tente dizer: {I went}.'),
+        isFalse);
+    expect(looksEnglishOutsideBraces('Diga: {I went to the park.}'), isFalse);
+  });
+
   test('texto sem chaves fica inteiro', () {
     expect(splitTargetLanguage('Muito bem!'),
         [(text: 'Muito bem!', target: false)]);

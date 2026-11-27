@@ -17,6 +17,7 @@ import '../../core/services/whisper_stt_service.dart';
 import '../../domain/models/native_language.dart';
 import '../../core/services/stt_service.dart';
 import '../../core/services/device_tts_service.dart';
+import '../../core/services/conversation_prompt.dart' show previousLessonText;
 import '../../core/services/conversation_service.dart';
 import '../../core/services/gemini_conversation_service.dart';
 import '../../core/services/groq_conversation_service.dart';
@@ -83,6 +84,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   // Última fala reconhecida e motivo técnico da última falha do STT.
   SttResult? _lastHeard;
+  // A última fala foi um comando: texto em português para o balão "Você".
+  String? _heardCommand;
+  // Instrução de correção reescrita em português (ver _ensureNativeInstruction).
+  String? _rewrittenInstruction;
+  String? _instructionStatus; // só no debug
   String? _lastSttError;
   String? _lastSttDebug; // medidas da escuta (ex.: volume), só no debug
 
@@ -103,6 +109,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   int _turnsSinceMemory = 0;
   bool _memoryUpdating = false;
   String? _memoryStatus; // só no debug
+  // Assunto desta aula até agora (nota da IA), para retomar na próxima aula.
+  String? _lessonNote;
+  String? _openingStatus; // só no debug: se a saudação retomou a aula anterior
 
   // Resumo da aula: o que aconteceu, para mostrar e falar no fim.
   final _tracker = LessonTracker();
@@ -197,9 +206,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _memoryUpdating = true;
     _turnsSinceMemory = 0;
     try {
-      final updated = await _conversation.updateMemory(
-          previous: _memory, profile: _profile ?? _defaultProfile);
-      if (updated == null) {
+      final result = await _conversation.updateMemory(
+          previous: _memory,
+          profile: _profile ?? _defaultProfile,
+          lessonNote: _lessonNote);
+      if (result == null) {
         _memoryStatus = 'não atualizada';
         return;
       }
@@ -208,12 +219,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (_memory != null && await studentMemory.load(_language) == null) {
         _memoryStatus = 'apagada pelo aluno';
         _memory = null;
+        _lessonNote = null;
         _conversation.memory = null;
         return;
       }
+      final updated = result.memory;
       _memory = updated;
       _conversation.memory = updated;
       await studentMemory.save(_language, updated);
+      // Assunto desta aula: substitui o da aula anterior, para retomar na
+      // próxima.
+      final note = result.lessonNote;
+      if (note != null) {
+        _lessonNote = note;
+        await studentMemory.saveLastLesson(_language, note);
+      }
       final items = updated.split('\n').where((l) => l.trim().isNotEmpty);
       _memoryStatus = 'atualizada (${items.length} itens)';
     } finally {
@@ -252,11 +272,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
         // Memória do aluno neste idioma (aulas anteriores).
         _memory = await studentMemory.load(_language);
         _conversation.memory = _memory;
+        // Assunto da aula anterior (até 14 dias), para a saudação retomar.
+        final last = await studentMemory.loadLastLesson(_language);
+        final previousLesson = previousLessonText(last?.note, last?.date);
+        _openingStatus = previousLesson == null
+            ? 'sem aula anterior para retomar'
+            : 'retomando ($previousLesson)';
         _tracker.start(DateTime.now()); // início da aula, para o resumo
         if (_shouldStop()) break;
         final opening = await _conversation.startConversation(
           profile: _profile ?? _defaultProfile,
           config: _config ?? _defaultConfig,
+          previousLesson: previousLesson,
         );
         if (_shouldStop()) break;
         _lastAiText = opening.text;
@@ -322,10 +349,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
         config: _config ?? _defaultConfig,
       );
       if (_shouldStop()) break;
+      // Pedido para encerrar ou pausar reconhecido pela IA.
+      if (await _handleAiCommand(aiTurn)) break;
       _countTurnForMemory(sttResult);
 
       // 4. Erro: começa a correção (próxima volta do ciclo).
       if (aiTurn.hasCorrection) {
+        await _ensureNativeInstruction(aiTurn);
+        if (_shouldStop()) break;
         _startCorrection(aiTurn);
       } else {
         _setNextTurn(aiTurn);
@@ -344,7 +375,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _tracker.addCorrection(turn.correction?.correctForm ?? ''); // para o resumo
     _clearHelpCard();
     _correctionReaction = turn.correctionReaction!;
-    _instructionPt = turn.instructionPt!;
+    // Instrução reescrita em português, se a original veio em inglês.
+    _instructionPt = _rewrittenInstruction ?? turn.instructionPt!;
+    _rewrittenInstruction = null;
     _inCorrection = true;
     _correctionStage = _CorrectionStage.reaction;
     _correctionSilences = 0;
@@ -411,8 +444,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _correctionStage = _CorrectionStage.instruction; // ao retomar
       return;
     }
+    if (await _handleAiCommand(turn)) return;
     _countTurnForMemory(result);
     _inCorrection = false;
+    if (turn.hasCorrection) {
+      // Errou de novo: nova correção, com a nova instrução.
+      await _ensureNativeInstruction(turn);
+      _startCorrection(turn);
+      return;
+    }
     _setNextTurn(turn);
   }
 
@@ -432,8 +472,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // "Pausa" e "encerrar": tratados pelo app, na hora. Devolve true se a fala
   // era um desses comandos.
   Future<bool> _handleControlCommand(SttResult result) async {
-    switch (detectCommand(result.transcript,
-        allowed: const {VoiceCommand.pause, VoiceCommand.end})) {
+    final command = detectCommand(result.transcript,
+        allowed: const {VoiceCommand.pause, VoiceCommand.end});
+    if (command != null) _showHeardCommand(command);
+    switch (command) {
       case VoiceCommand.pause:
         _sessionManager.transition(SessionState.paused);
         return true;
@@ -442,6 +484,49 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return true;
       default:
         return false;
+    }
+  }
+
+  // A IA reconheceu um pedido para encerrar ou pausar que escapou da lista
+  // de comandos (outra frase ou outra tradução). Devolve true se agiu.
+  Future<bool> _handleAiCommand(AiTurn turn) async {
+    switch (turn.command) {
+      case LessonCommand.end:
+        _showHeardCommand(VoiceCommand.end);
+        await _endSession();
+        return true;
+      case LessonCommand.pause:
+        _showHeardCommand(VoiceCommand.pause);
+        _sessionManager.transition(SessionState.paused);
+        return true;
+      case null:
+        return false;
+    }
+  }
+
+  // Nível Iniciante a Intermediário avançado: se a instrução de correção veio
+  // em inglês fora das chaves, pede à IA que a reescreva em português.
+  Future<void> _ensureNativeInstruction(AiTurn turn) async {
+    final instruction = turn.instructionPt;
+    if (instruction == null ||
+        _instructionLocaleId != nativeLanguage.localeId ||
+        !looksEnglishOutsideBraces(instruction)) {
+      return;
+    }
+    final rewritten = await _conversation.rewriteInstruction(instruction);
+    if (rewritten != null && !looksEnglishOutsideBraces(rewritten)) {
+      _rewrittenInstruction = rewritten;
+      _instructionStatus = 'reescrita em português';
+      return;
+    }
+    // Rede de segurança: a reescrita falhou ou ainda veio misturada. Fala
+    // uma instrução simples em português com a forma correta.
+    final correctForm = turn.correction?.correctForm.trim() ?? '';
+    if (correctForm.isNotEmpty) {
+      _rewrittenInstruction = fallbackInstruction(correctForm);
+      _instructionStatus = 'trocada pela instrução padrão';
+    } else {
+      _instructionStatus = 'veio em inglês e não foi reescrita';
     }
   }
 
@@ -494,11 +579,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final started = DateTime.now();
         final result = await _stt.recognize(localeId: _localeId);
         if (done.isCompleted || _shouldStop()) break;
-        switch (detectCommand(result.transcript, allowed: const {
+        final command = detectCommand(result.transcript, allowed: const {
           VoiceCommand.resume,
           VoiceCommand.pause,
           VoiceCommand.end,
-        })) {
+        });
+        if (command != null) {
+          _rememberHeard(result);
+          _showHeardCommand(command);
+        }
+        switch (command) {
           case VoiceCommand.resume:
             _finishInterval();
           case VoiceCommand.pause:
@@ -540,8 +630,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
       while (mounted && _sessionManager.state == SessionState.paused) {
         final result = await _stt.recognize(localeId: _localeId);
         if (!mounted || _sessionManager.state != SessionState.paused) return;
-        switch (detectCommand(result.transcript,
-            allowed: const {VoiceCommand.resume, VoiceCommand.end})) {
+        final command = detectCommand(result.transcript,
+            allowed: const {VoiceCommand.resume, VoiceCommand.end});
+        if (command != null) {
+          _rememberHeard(result);
+          _showHeardCommand(command);
+        }
+        switch (command) {
           case VoiceCommand.resume:
             _resumeSession();
             return;
@@ -623,8 +718,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // de falha do reconhecimento (exibido só no debug).
   void _rememberHeard(SttResult result) {
     _lastHeard = result;
+    _heardCommand = null;
     _lastSttError = _stt.lastError;
     _lastSttDebug = _stt.debugInfo;
+  }
+
+  // A fala foi um comando: o balão "Você" mostra o comando em português, e
+  // não a tradução para o idioma da aula (ex.: "Encerrar a aula").
+  void _showHeardCommand(VoiceCommand command) {
+    _heardCommand = commandLabel(command);
   }
 
   // Última fala do aluno, como parte da conversa.
@@ -651,9 +753,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            empty
-                ? 'Não consegui ouvir. Tente de novo.'
-                : '"${heard.transcript}"',
+            _heardCommand ??
+                (empty
+                    ? 'Não consegui ouvir. Tente de novo.'
+                    : '"${heard.transcript}"'),
             maxLines: 4,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -698,6 +801,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       stt,
       if (levels != null) 'Volume: $levels',
       if (voice != null) 'Voz: $voice',
+      if (_openingStatus != null) 'Abertura: $_openingStatus',
+      if (_instructionStatus != null) 'Instrução: $_instructionStatus',
       if (_memoryStatus != null) 'Memória: $_memoryStatus',
       ai,
     ].join('\n');
